@@ -18,42 +18,101 @@ class PlayfieldAST:
         self.parse_error = None
         self.duplicate_key_info = None
         self.description_fixed = False
+        # 1. Sanitize all Description formats (quoted or unquoted multi-line) into single "..." line
         self.sanitize_description_block()
+        # 2. Load AST
         self.load()
 
     def sanitize_description_block(self) -> bool:
+        """Finds ANY multi-line Description (quoted or unquoted with indentation) and collapses it into a single line wrapped in double quotes."""
         if not self.path.exists():
             return False
 
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                content = f.read()
+                lines = f.readlines()
 
-            desc_pattern = re.compile(r'(^[ \t]*Description:\s*")([^"]*?)("\s*$)', re.MULTILINE | re.DOTALL)
-            
-            def flatten_match(match):
-                prefix = match.group(1)
-                body = match.group(2)
-                suffix = match.group(3)
+            modified = False
+            new_lines = []
+            i = 0
+            n = len(lines)
 
-                if '\n' in body:
+            while i < n:
+                line = lines[i]
+                # Match start of a Description line (e.g., 'Description:' or '  Description:')
+                match = re.match(r'^([ \t]*Description:)\s*(.*)$', line)
+                if match:
+                    prefix = match.group(1) # 'Description:'
+                    first_val = match.group(2).rstrip('\r\n')
+
+                    desc_parts = []
+                    # Check if it starts with an open quote
+                    starts_with_quote = first_val.startswith('"') or first_val.startswith("'")
+                    quote_char = first_val[0] if starts_with_quote else None
+
+                    # If it starts with quote and also closes on the same line (and not empty)
+                    if starts_with_quote and len(first_val) > 1 and first_val.endswith(quote_char) and not first_val.endswith('\\' + quote_char):
+                        # Already on a single quoted line! Clean up if needed
+                        new_lines.append(line)
+                        i += 1
+                        continue
+
+                    # Multi-line detected (either unquoted indented, or unclosed quote spanning multiple lines)
+                    if starts_with_quote:
+                        desc_parts.append(first_val[1:].rstrip(quote_char))
+                    elif first_val:
+                        desc_parts.append(first_val)
+
+                    # Gather continuation lines
+                    j = i + 1
+                    while j < n:
+                        next_line = lines[j]
+                        # Stop if we hit another top-level or sibling YAML key (e.g., 'PlanetType:', 'Gravity:', 'POIs:')
+                        if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) and not next_line.strip().startswith("-"):
+                            break
+                        # Stop if unquoted line is completely unindented
+                        if not starts_with_quote and next_line.strip() and not next_line.startswith(" ") and not next_line.startswith("\t"):
+                            break
+
+                        stripped = next_line.strip()
+                        if starts_with_quote and quote_char in stripped:
+                            # Reached the closing quote
+                            part = stripped.split(quote_char)[0].strip()
+                            if part:
+                                desc_parts.append(part)
+                            j += 1
+                            break
+                        else:
+                            if stripped:
+                                # Clean up leading literal \n or stray hyphens
+                                if stripped.startswith('\\n'):
+                                    stripped = stripped[2:].strip()
+                                desc_parts.append(stripped)
+                        j += 1
+
+                    # Combine all sentence parts cleanly into ONE single line
+                    # Join with single space, preserving punctuation and literal \n where intended
+                    full_text = " ".join([p for p in desc_parts if p])
+                    # Clean double spaces
+                    full_text = re.sub(r'[ \t]+', ' ', full_text).strip()
+                    # Escape internal double quotes so it's strictly valid YAML
+                    clean_inner = full_text.replace('"', '\\"')
+
+                    # Produce guaranteed single line enclosed in double quotes: Description: "..."
+                    sanitized_line = f'{prefix} "{clean_inner}"\n'
+                    new_lines.append(sanitized_line)
+                    modified = True
                     self.description_fixed = True
-                    lines = [line.strip() for line in body.splitlines()]
-                    cleaned_lines = []
-                    for line in lines:
-                        if line.startswith('\\n'):
-                            line = line[2:].strip()
-                        cleaned_lines.append(line)
-                    flattened = "\\n".join([c for c in cleaned_lines if c != ""])
-                    return f'{prefix}{flattened}{suffix}'
-                return match.group(0)
+                    i = j
+                    continue
+                else:
+                    new_lines.append(line)
+                    i += 1
 
-            new_content = desc_pattern.sub(flatten_match, content)
-
-            if self.description_fixed and new_content != content:
+            if modified:
                 self.backup()
                 with open(self.path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
+                    f.writelines(new_lines)
                     f.flush()
                     os.fsync(f.fileno())
                 return True
@@ -148,7 +207,6 @@ class PlayfieldAST:
         if container is not None and 0 <= index < len(container):
             item = container[index]
             if isinstance(item, dict):
-                # Replace bad biome with single valid biome or list
                 item["Biome"] = [new_biome]
                 self.save_atomic()
                 return True
@@ -196,14 +254,12 @@ class PlayfieldAST:
             suggestions = issue.get("suggestions", [])
             itype = issue.get("type")
 
-            # 1. Biome Correction
             if itype == "invalid_biome":
                 if suggestions:
                     self.correct_biome(source, idx, suggestions[0])
                     repaired += 1
                 continue
 
-            # 2. Compound POI / Prefab Replacement
             is_compound = (itype == "missing_compound_poi")
             if suggestions:
                 chosen = random.choice(suggestions)
