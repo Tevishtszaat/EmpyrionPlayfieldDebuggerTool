@@ -23,13 +23,27 @@ class PlayfieldValidator:
         self.valid_eclasses = getattr(indexer, 'valid_eclasses', set())
         self.planet_biomes = self.extract_planet_biomes()
 
+        # Engine-level origin anchors & dummy POIs (Never missing, always valid)
+        self.null_poi_whitelist = {
+            "nullpoi", "null_poi", "emptypoi", "empty_poi", 
+            "null", "nullorigin", "originpoi", "dummy_poi", "dummypoi"
+        }
+
+    def is_null_poi(self, identifier: str) -> bool:
+        if not identifier:
+            return False
+        clean = identifier.lower().strip()
+        if clean in self.null_poi_whitelist:
+            return True
+        if clean.startswith("nullpoi") or clean.startswith("null_poi"):
+            return True
+        return False
+
     def extract_planet_biomes(self) -> set:
-        """Finds all valid biomes defined for this planet from static or dynamic supporting files."""
         biomes = set()
         if not self.data or not isinstance(self.data, dict):
             return biomes
 
-        # 1. Read from active playfield data
         b_section = self.data.get("Biome", [])
         if isinstance(b_section, list):
             for b in b_section:
@@ -38,7 +52,6 @@ class PlayfieldValidator:
                     if name:
                         biomes.add(str(name).strip())
 
-        # 2. If empty or if static, check companion playfield_dynamic.yaml in the same folder
         if self.file_path and self.file_path.parent:
             companion_files = [
                 self.file_path.parent / "playfield_dynamic.yaml",
@@ -61,7 +74,6 @@ class PlayfieldValidator:
                     except Exception:
                         pass
 
-        # Standard universal biomes that are always engine-safe
         biomes.update({"Any", "Global", "Space"})
         return biomes
 
@@ -115,8 +127,12 @@ class PlayfieldValidator:
 
             target_id = compound_name or group_name or prefab
 
-            # Check Biomes assigned to this POI/Entity
-            if self.planet_biomes and len(self.planet_biomes) > 3: # Only check if planet has explicit biomes defined
+            # CHECK 0: Is this a NullPOI origin anchor placeholder? (Skip immediately!)
+            if self.is_null_poi(prefab) or self.is_null_poi(group_name) or self.is_null_poi(target_id):
+                continue
+
+            # Check Biomes
+            if self.planet_biomes and len(self.planet_biomes) > 3:
                 raw_biome = poi.get("Biome", [])
                 assigned_biomes = []
                 if isinstance(raw_biome, list):
@@ -150,11 +166,11 @@ class PlayfieldValidator:
 
             target_lower = target_id.lower()
 
-            # EClass check
+            # Check EClass (Asteroid Field, Fog, Gas Clouds, etc.)
             if target_lower in self.valid_eclasses or any(target_lower.startswith(ec) for ec in ["asteroid", "gascloud", "spacefog"]):
                 continue
 
-            # Compound POI check
+            # Check Compound POIs
             is_compound = bool(compound_name or target_lower.startswith("compound") or "wreck" in target_lower or "debris" in target_lower)
             if is_compound:
                 if target_lower not in self.valid_compounds:
@@ -173,7 +189,7 @@ class PlayfieldValidator:
                     })
                     continue
 
-            # Prefab & Group check
+            # Check Prefab & GroupName
             prefab_valid = bool(prefab and prefab.lower() in self.valid_prefabs)
             group_valid = False
 
