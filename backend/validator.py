@@ -1,7 +1,15 @@
-﻿class PlayfieldValidator:
-    def __init__(self, playfield_data, indexer):
+﻿import re
+from pathlib import Path
+from ruamel.yaml import YAML
+
+yaml = YAML()
+yaml.preserve_quotes = True
+
+class PlayfieldValidator:
+    def __init__(self, playfield_data, indexer, file_path=None):
         self.data = playfield_data
         self.indexer = indexer
+        self.file_path = Path(file_path) if file_path else None
         
         if hasattr(indexer, 'get_available_prefabs'):
             prefabs = indexer.get_available_prefabs()
@@ -12,16 +20,59 @@
             self.valid_prefabs = set()
 
         self.valid_compounds = getattr(indexer, 'valid_compound_pois', set())
+        self.valid_eclasses = getattr(indexer, 'valid_eclasses', set())
+        self.planet_biomes = self.extract_planet_biomes()
+
+    def extract_planet_biomes(self) -> set:
+        """Finds all valid biomes defined for this planet from static or dynamic supporting files."""
+        biomes = set()
+        if not self.data or not isinstance(self.data, dict):
+            return biomes
+
+        # 1. Read from active playfield data
+        b_section = self.data.get("Biome", [])
+        if isinstance(b_section, list):
+            for b in b_section:
+                if isinstance(b, dict):
+                    name = b.get("Name")
+                    if name:
+                        biomes.add(str(name).strip())
+
+        # 2. If empty or if static, check companion playfield_dynamic.yaml in the same folder
+        if self.file_path and self.file_path.parent:
+            companion_files = [
+                self.file_path.parent / "playfield_dynamic.yaml",
+                self.file_path.parent / "playfield_dynamic.yml",
+                self.file_path.parent / "playfield.yaml"
+            ]
+            for comp in companion_files:
+                if comp.exists() and comp != self.file_path:
+                    try:
+                        with open(comp, "r", encoding="utf-8") as f:
+                            cdata = yaml.load(f)
+                        if isinstance(cdata, dict):
+                            cb = cdata.get("Biome", [])
+                            if isinstance(cb, list):
+                                for b in cb:
+                                    if isinstance(b, dict):
+                                        name = b.get("Name")
+                                        if name:
+                                            biomes.add(str(name).strip())
+                    except Exception:
+                        pass
+
+        # Standard universal biomes that are always engine-safe
+        biomes.update({"Any", "Global", "Space"})
+        return biomes
 
     def validate(self):
         issues = []
         if not self.data or not isinstance(self.data, dict):
             return issues
 
-        # Collect targets safely without modifying original dictionary
         targets = []
 
-        # 1. Standard POIs (Random and Fixed)
+        # 1. Random and Fixed POIs
         raw_pois = self.data.get("POIs", {})
         if isinstance(raw_pois, dict):
             r_list = raw_pois.get("Random", [])
@@ -35,35 +86,82 @@
                     if isinstance(item, dict):
                         targets.append({"source": "Fixed", "index": idx, "data": item})
 
-        # 2. Orbital Objects (Asteroid fields, wrecks, space stations)
+        # 2. Objects sequence
         raw_objects = self.data.get("Objects", [])
         if isinstance(raw_objects, list):
             for idx, item in enumerate(raw_objects):
                 if isinstance(item, dict):
                     targets.append({"source": "Objects", "index": idx, "data": item})
 
+        # 3. Drones and Spawners
+        raw_drone_spawns = self.data.get("DroneSpawns", [])
+        if isinstance(raw_drone_spawns, list):
+            for idx, item in enumerate(raw_drone_spawns):
+                if isinstance(item, dict):
+                    targets.append({"source": "DroneSpawns", "index": idx, "data": item})
+
         for entry in targets:
+            source = entry["source"]
             idx = entry["index"]
             poi = entry["data"]
 
-            prefab = str(poi.get("Prefab", "")).strip()
+            prefab = str(poi.get("Prefab") or poi.get("Name") or poi.get("Model") or "").strip()
+            if prefab.lower().endswith(".epb"):
+                prefab = prefab[:-4]
+
             group_name = str(poi.get("GroupName", "")).strip()
             compound_name = str(poi.get("CompoundPOI", "")).strip()
             faction = str(poi.get("Faction", "Unknown")).strip()
 
             target_id = compound_name or group_name or prefab
+
+            # Check Biomes assigned to this POI/Entity
+            if self.planet_biomes and len(self.planet_biomes) > 3: # Only check if planet has explicit biomes defined
+                raw_biome = poi.get("Biome", [])
+                assigned_biomes = []
+                if isinstance(raw_biome, list):
+                    assigned_biomes = [str(b).strip() for b in raw_biome]
+                elif isinstance(raw_biome, str):
+                    assigned_biomes = [raw_biome.strip()]
+
+                invalid_biomes = []
+                for ab in assigned_biomes:
+                    if ab and ab not in self.planet_biomes and ab.lower() not in {b.lower() for b in self.planet_biomes}:
+                        invalid_biomes.append(ab)
+
+                if invalid_biomes:
+                    valid_biome_suggestions = sorted([b for b in self.planet_biomes if b not in {"Any", "Global", "Space"}])
+                    issues.append({
+                        "id": f"biome_{source}_{idx}",
+                        "source": source,
+                        "index": idx,
+                        "type": "invalid_biome",
+                        "severity": "WARNING",
+                        "message": f"Assigned Biome '{', '.join(invalid_biomes)}' does not exist on this planet!",
+                        "current_value": f"Entity: '{target_id}' | Bad Biome: {invalid_biomes}",
+                        "faction": faction,
+                        "group_name": group_name,
+                        "bad_biomes": invalid_biomes,
+                        "suggestions": valid_biome_suggestions
+                    })
+
             if not target_id:
                 continue
 
             target_lower = target_id.lower()
 
-            # Check A: Compound POI (Asteroid clusters, wrecks, gas clouds)
+            # EClass check
+            if target_lower in self.valid_eclasses or any(target_lower.startswith(ec) for ec in ["asteroid", "gascloud", "spacefog"]):
+                continue
+
+            # Compound POI check
             is_compound = bool(compound_name or target_lower.startswith("compound") or "wreck" in target_lower or "debris" in target_lower)
             if is_compound:
                 if target_lower not in self.valid_compounds:
                     suggestions = self.indexer.get_contextual_replacements(target_id, target_id) if hasattr(self.indexer, 'get_contextual_replacements') else []
                     issues.append({
-                        "id": f"compound_{entry['source']}_{idx}",
+                        "id": f"compound_{source}_{idx}",
+                        "source": source,
                         "index": idx,
                         "type": "missing_compound_poi",
                         "severity": "ERROR",
@@ -75,7 +173,7 @@
                     })
                     continue
 
-            # Check B: Prefab and Blueprint Group validation
+            # Prefab & Group check
             prefab_valid = bool(prefab and prefab.lower() in self.valid_prefabs)
             group_valid = False
 
@@ -87,16 +185,16 @@
                 if not group_valid and g_lower in self.valid_prefabs:
                     group_valid = True
 
-            # If neither Prefab nor Group exists
             if not prefab_valid and not group_valid:
                 suggestions = self.indexer.get_contextual_replacements(group_name, prefab) if hasattr(self.indexer, 'get_contextual_replacements') else []
                 issues.append({
-                    "id": f"poi_{entry['source']}_{idx}",
+                    "id": f"poi_{source}_{idx}",
+                    "source": source,
                     "index": idx,
                     "type": "missing_prefab",
                     "severity": "ERROR",
-                    "message": f"Blueprint group or prefab '{group_name or prefab}' not found in Prefabs folder.",
-                    "current_value": f"Group: '{group_name}' | Prefab: '{prefab}'",
+                    "message": f"Asset '{group_name or prefab}' not found in Prefabs folder.",
+                    "current_value": f"Name/Prefab: '{prefab}' | Group: '{group_name}'",
                     "faction": faction,
                     "group_name": group_name,
                     "suggestions": suggestions
