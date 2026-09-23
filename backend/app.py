@@ -1,6 +1,8 @@
 ﻿import os
+import sys
 import json
 import asyncio
+import platform
 import subprocess
 import traceback
 from fastapi import FastAPI, HTTPException, Request
@@ -46,16 +48,54 @@ class FixDuplicateKeyRequest(BaseModel):
     line: int
     key: str
 
-def find_notepad_plus_plus() -> str:
-    candidates = [
-        r"C:\Program Files\Notepad++\notepad++.exe",
-        r"C:\Program Files (x86)\Notepad++\notepad++.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Notepad++\notepad++.exe")
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    return ""
+class ListDirRequest(BaseModel):
+    current_path: str = ""
+    os_mode: str = "win"
+
+@app.post("/api/filesystem/list")
+def list_filesystem(req: ListDirRequest):
+    """Cross-platform directory explorer for web-based browsing."""
+    is_win = (req.os_mode == "win") or (platform.system() == "Windows")
+    target = req.current_path.strip()
+
+    # Default to root drives or root folder
+    if not target:
+        if is_win:
+            import string
+            drives = []
+            for letter in string.ascii_uppercase:
+                d = f"{letter}:\\"
+                if os.path.exists(d):
+                    drives.append({"name": f"{letter}:", "path": d, "is_dir": True})
+            return {"current_path": "", "parent_path": "", "items": drives, "separator": "\\"}
+        else:
+            target = "/"
+
+    p = Path(target)
+    if not p.exists():
+        # Fallback to home
+        p = Path.home()
+
+    items = []
+    try:
+        with os.scandir(p) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir() and not entry.name.startswith(".") and entry.name != ".epd_backups":
+                        items.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                            "is_dir": True
+                        })
+                except Exception:
+                    pass
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Permission denied or unreadable path: {str(e)}")
+
+    items.sort(key=lambda x: x["name"].lower())
+    parent = str(p.parent) if p.parent != p else ""
+    sep = "\\" if is_win else "/"
+    return {"current_path": str(p), "parent_path": parent, "items": items, "separator": sep}
 
 @app.post("/api/open-file")
 def open_local_file(req: OpenFileRequest):
@@ -63,14 +103,28 @@ def open_local_file(req: OpenFileRequest):
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"File does not exist: {p}")
 
-    npp = find_notepad_plus_plus()
+    is_win = platform.system() == "Windows"
     try:
-        if npp:
-            subprocess.Popen([npp, str(p)])
-            return {"status": "ok", "app": "Notepad++"}
-        else:
+        if is_win:
+            candidates = [
+                r"C:\Program Files\Notepad++\notepad++.exe",
+                r"C:\Program Files (x86)\Notepad++\notepad++.exe",
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Notepad++\notepad++.exe")
+            ]
+            for c in candidates:
+                if os.path.exists(c):
+                    subprocess.Popen([c, str(p)])
+                    return {"status": "ok", "app": "Notepad++"}
             os.startfile(str(p))
-            return {"status": "ok", "app": "System Default"}
+            return {"status": "ok", "app": "Default Editor"}
+        else:
+            # Linux: try gedit, kate, nano, or xdg-open
+            for editor in ["gedit", "kate", "xdg-open"]:
+                if subprocess.run(["which", editor], capture_output=True).returncode == 0:
+                    subprocess.Popen([editor, str(p)])
+                    return {"status": "ok", "app": editor}
+            subprocess.Popen(["xdg-open", str(p)])
+            return {"status": "ok", "app": "xdg-open"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not open editor: {str(e)}")
 
@@ -187,7 +241,6 @@ async def stream_scan(req: ScanMasterRequest):
 
 @app.post("/api/batch/stream-master-complete")
 async def stream_master_complete():
-    """Streams Master Complete repair progress with countdown from total files."""
     if not STATE["indexer"] or not STATE["batch_files"]:
         raise HTTPException(status_code=400, detail="Please scan directories before running Master Complete.")
 
@@ -199,7 +252,6 @@ async def stream_master_complete():
             remaining = total_files - (idx + 1)
             try:
                 ast = PlayfieldAST(item["path"])
-                # 1. Deduplicate lines if needed
                 if ast.duplicate_key_info:
                     dup = ast.duplicate_key_info
                     ast.remove_duplicate_key_line(dup["line"], dup["key"])

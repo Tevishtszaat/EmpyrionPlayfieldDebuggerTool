@@ -6,26 +6,14 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <style>
-    /* Natural Buoyancy Physics */
-    @keyframes float-berg-left {
-      0%, 100% { transform: translateY(0px) rotate(-1deg); }
-      50% { transform: translateY(-6px) rotate(1.2deg); }
-    }
-    @keyframes float-berg-right {
-      0%, 100% { transform: translateY(-4px) rotate(1deg); }
-      50% { transform: translateY(5px) rotate(-1deg); }
-    }
+    @keyframes float-berg-left { 0%, 100% { transform: translateY(0px) rotate(-1deg); } 50% { transform: translateY(-6px) rotate(1.2deg); } }
+    @keyframes float-berg-right { 0%, 100% { transform: translateY(-4px) rotate(1deg); } 50% { transform: translateY(5px) rotate(-1deg); } }
     .iceberg-left-island { animation: float-berg-left 4.2s ease-in-out infinite; }
     .iceberg-right-island { animation: float-berg-right 3.6s ease-in-out infinite; }
 
-    /* Open Ocean Wave Movement */
-    @keyframes ocean-swell {
-      0% { transform: translateX(0); }
-      100% { transform: translateX(-180px); }
-    }
+    @keyframes ocean-swell { 0% { transform: translateX(0); } 100% { transform: translateX(-180px); } }
     .ocean-wave-anim { animation: ocean-swell 5s linear infinite; }
 
-    /* Polar Bear Chase Cycle */
     @keyframes bear-run-jump {
       0%, 15% { left: 45px; top: 38px; transform: scaleX(1); }
       30% { left: 135px; top: 38px; transform: scaleX(1); }
@@ -39,7 +27,6 @@
       98%, 100% { left: 45px; top: 38px; transform: scaleX(1); }
     }
 
-    /* Arctic Explorer Panic Leap & Swim */
     @keyframes person-dodge-loop {
       0%, 10% { left: 375px; top: 34px; transform: scaleX(-1); }
       18% { left: 320px; top: 34px; transform: scaleX(-1); }
@@ -61,32 +48,10 @@
       32%, 84% { transform: scale(2.6); opacity: 0; }
     }
 
-    .polar-bear-actor {
-      position: absolute;
-      animation: bear-run-jump 8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-      z-index: 30;
-    }
-
-    .explorer-actor {
-      position: absolute;
-      animation: person-dodge-loop 8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-      z-index: 32;
-    }
-
-    .water-splash-1 {
-      position: absolute;
-      left: 235px;
-      top: 92px;
-      animation: ripple-effect 8s 1.9s infinite;
-      z-index: 28;
-    }
-    .water-splash-2 {
-      position: absolute;
-      left: 170px;
-      top: 92px;
-      animation: ripple-effect 8s 6.1s infinite;
-      z-index: 28;
-    }
+    .polar-bear-actor { position: absolute; animation: bear-run-jump 8s cubic-bezier(0.4, 0, 0.6, 1) infinite; z-index: 30; }
+    .explorer-actor { position: absolute; animation: person-dodge-loop 8s cubic-bezier(0.4, 0, 0.6, 1) infinite; z-index: 32; }
+    .water-splash-1 { position: absolute; left: 235px; top: 92px; animation: ripple-effect 8s 1.9s infinite; z-index: 28; }
+    .water-splash-2 { position: absolute; left: 170px; top: 92px; animation: ripple-effect 8s 6.1s infinite; z-index: 28; }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen">
@@ -96,9 +61,16 @@
     <header class="bg-slate-950 p-4 border-b border-slate-800 flex justify-between items-center">
       <div class="flex items-center gap-3">
         <h1 class="text-xl font-bold text-sky-400">Empyrion Playfield Debugger Tool</h1>
-        <span class="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700">Studio Edition</span>
-        <button @click="autoFillFDrivePaths" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-2.5 py-1 rounded">
-          ⚡ Auto-Fill F:\ Steam Paths
+        
+        <!-- Win / Linux OS Mode Toggle -->
+        <button @click="toggleOS" class="text-xs px-3 py-1 rounded-full font-bold border transition flex items-center gap-1.5"
+                :class="osMode === 'win' ? 'bg-sky-950 text-sky-300 border-sky-700' : 'bg-emerald-950 text-emerald-300 border-emerald-700'">
+          <span>{{ osMode === 'win' ? '🪟 Windows (\\)' : '🐧 Linux (/)' }}</span>
+          <span class="text-[10px] text-slate-400 underline">Switch</span>
+        </button>
+
+        <button @click="autoFillPaths" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-2.5 py-1 rounded">
+          ⚡ Auto-Fill Preset Paths
         </button>
       </div>
       
@@ -112,22 +84,45 @@
       </div>
     </header>
 
-    <!-- 4 Directory Selectors -->
+    <!-- 4 Directory Selectors with "Browse Tree" Button -->
     <div class="bg-slate-950/70 p-3 border-b border-slate-800 grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
       <div>
-        <label class="text-sky-400 font-bold block mb-1">1. Scenario Playfields</label>
+        <div class="flex justify-between items-center mb-1">
+          <label class="text-sky-400 font-bold">1. Scenario Playfields</label>
+          <button @click="openTreeModal('scenario_playfields')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 px-1.5 py-0.5 rounded">
+            📁 Tree
+          </button>
+        </div>
         <input v-model="paths.scenario_playfields" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
+
       <div>
-        <label class="text-emerald-400 font-bold block mb-1">2. Scenario Prefabs</label>
+        <div class="flex justify-between items-center mb-1">
+          <label class="text-emerald-400 font-bold">2. Scenario Prefabs</label>
+          <button @click="openTreeModal('scenario_prefabs')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 px-1.5 py-0.5 rounded">
+            📁 Tree
+          </button>
+        </div>
         <input v-model="paths.scenario_prefabs" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
+
       <div>
-        <label class="text-amber-400 font-bold block mb-1">3. Main Game Playfields</label>
+        <div class="flex justify-between items-center mb-1">
+          <label class="text-amber-400 font-bold">3. Main Game Playfields</label>
+          <button @click="openTreeModal('game_playfields')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 px-1.5 py-0.5 rounded">
+            📁 Tree
+          </button>
+        </div>
         <input v-model="paths.game_playfields" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
+
       <div>
-        <label class="text-purple-400 font-bold block mb-1">4. Main Game Prefabs</label>
+        <div class="flex justify-between items-center mb-1">
+          <label class="text-purple-400 font-bold">4. Main Game Prefabs</label>
+          <button @click="openTreeModal('game_prefabs')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-purple-300 border border-slate-700 px-1.5 py-0.5 rounded">
+            📁 Tree
+          </button>
+        </div>
         <input v-model="paths.game_prefabs" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
     </div>
@@ -168,7 +163,7 @@
           </div>
           <div class="flex gap-2">
             <button @click="openLocalFile(activeFile)" class="bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-1.5">
-              <span>📄 Open in Notepad++</span>
+              <span>📄 Open Editor</span>
             </button>
             <button @click="autoCompleteSingle" :disabled="busy || activeIssues.length === 0" 
                     class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 rounded text-xs font-bold transition">
@@ -204,19 +199,58 @@
         </div>
       </main>
 
-      <!-- REALISTIC ARCTIC ICEBERG CHASE DIORAMA WITH LIVE COUNTDOWN (DURING BUSY) -->
-      <div v-if="busy" class="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center z-50">
-        
-        <div class="bg-slate-900/95 border border-sky-800/80 p-6 rounded-3xl shadow-2xl flex flex-col items-center w-[540px]">
+      <!-- VISUAL FILE TREE DIRECTORY PICKER MODAL -->
+      <div v-if="showTreeModal" class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-[560px] h-[480px] flex flex-col shadow-2xl overflow-hidden">
           
+          <!-- Tree Header -->
+          <div class="p-3 bg-slate-950 border-b border-slate-800 flex justify-between items-center">
+            <div class="text-xs font-bold text-sky-400 flex items-center gap-2">
+              <span>📁 Browse Folders</span>
+              <span class="text-[10px] text-slate-400 font-mono">({{ osMode.toUpperCase() }})</span>
+            </div>
+            <button @click="showTreeModal = false" class="text-xs text-slate-400 hover:text-white">✕</button>
+          </div>
+
+          <!-- Current Path Breadcrumb -->
+          <div class="p-2 bg-slate-950/40 border-b border-slate-800 text-[11px] font-mono text-slate-300 truncate">
+            Path: {{ treeData.current_path || 'Root' }}
+          </div>
+
+          <!-- Folder List Body -->
+          <div class="flex-1 p-3 overflow-y-auto space-y-1 text-xs">
+            <div v-if="treeData.parent_path" @click="navigateTree(treeData.parent_path)"
+                 class="p-1.5 bg-slate-800/40 hover:bg-slate-800 rounded cursor-pointer text-amber-300 flex items-center gap-2">
+              <span>⤴️</span> <span>[Up to Parent Directory]</span>
+            </div>
+            <div v-for="item in treeData.items" :key="item.path" @click="navigateTree(item.path)"
+                 class="p-1.5 hover:bg-sky-950/60 rounded cursor-pointer flex justify-between items-center text-slate-200">
+              <span class="flex items-center gap-2 truncate">📁 {{ item.name }}</span>
+              <span class="text-[10px] text-slate-500 font-mono">dir</span>
+            </div>
+          </div>
+
+          <!-- Tree Footer -->
+          <div class="p-3 bg-slate-950 border-t border-slate-800 flex justify-between items-center">
+            <button @click="showTreeModal = false" class="text-xs text-slate-400 hover:text-white px-3 py-1">Cancel</button>
+            <button @click="selectTreeFolder" :disabled="!treeData.current_path" 
+                    class="bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-bold text-xs px-4 py-1.5 rounded transition">
+              Select This Folder
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ARCTIC ICEBERG CHASE DIORAMA WITH LIVE COUNTDOWN (DURING BUSY) -->
+      <div v-if="busy" class="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center z-50">
+        <div class="bg-slate-900/95 border border-sky-800/80 p-6 rounded-3xl shadow-2xl flex flex-col items-center w-[540px]">
           <h3 class="text-sm font-bold text-sky-300 mb-1 flex items-center gap-2">
             <span>{{ operationTitle }}</span>
           </h3>
           <p class="text-[11px] text-slate-400 mb-4">The polar bear is chasing! Watch him dodge across the freezing water!</p>
 
-          <!-- Diorama Viewport -->
           <div class="relative w-[480px] h-[220px] bg-gradient-to-b from-[#061726] via-[#08233a] to-[#031320] rounded-2xl overflow-hidden border border-sky-800 shadow-inner">
-            
             <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-teal-500/10 via-transparent to-transparent pointer-events-none"></div>
             <div class="absolute top-2 left-6 text-white/40 text-xs select-none">❄</div>
             <div class="absolute top-6 left-48 text-white/20 text-[10px] select-none">❅</div>
@@ -300,35 +334,31 @@
               </svg>
             </div>
 
-            <!-- Front Foamy Wave Layer -->
+            <!-- Front Ocean Swell -->
             <div class="absolute bottom-0 left-0 right-0 h-28 pointer-events-none z-25 overflow-hidden">
               <svg class="ocean-wave-anim absolute bottom-0 left-0 w-[720px] h-20 opacity-80" viewBox="0 0 360 40" fill="#0284c7">
                 <path d="M0,15 Q45,25 90,15 T180,15 T270,15 T360,15 V40 H0 Z"/>
                 <path d="M0,15 Q45,25 90,15 T180,15 T270,15 T360,15" stroke="#e0f2fe" stroke-width="2.5" fill="none"/>
               </svg>
             </div>
-
           </div>
 
-          <!-- Real-Time Countdown Progress Bar -->
+          <!-- Dynamic Live Countdown Tracker -->
           <div class="w-full mt-4 flex flex-col items-center">
-            <div class="text-xs font-mono text-sky-300 mb-1 flex justify-between w-full px-1">
-              <span>
-                {{ isMasterFixing ? `Repairing (${scanStatus.current} / ${scanStatus.total}): ${scanStatus.currentName}` : `Auditing: ${scanStatus.currentName}` }}
-              </span>
-              <span v-if="isMasterFixing" class="text-amber-400 font-bold">
-                ⏳ {{ scanStatus.remaining }} remaining
+            <div class="text-xs font-mono text-sky-300 mb-1 flex items-center justify-between w-full">
+              <span>{{ liveProgressLabel }}</span>
+              <span class="text-amber-400 font-bold" v-if="countdownRemaining !== null">
+                ⏳ {{ countdownRemaining }} files remaining
               </span>
             </div>
             <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-sky-900 mt-1">
               <div class="bg-gradient-to-r from-sky-400 via-teal-300 to-indigo-500 h-2.5 rounded-full transition-all duration-200" 
-                   :style="{ width: (scanStatus.total > 0 ? (scanStatus.current / scanStatus.total) * 100 : 0) + '%' }">
+                   :style="{ width: progressPercent + '%' }">
               </div>
             </div>
           </div>
 
         </div>
-
       </div>
 
     </div>
@@ -339,6 +369,7 @@
     createApp({
       data() {
         return {
+          osMode: 'win', // 'win' or 'lin'
           paths: {
             scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Playfields",
             scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Prefabs",
@@ -350,15 +381,16 @@
           activeIssues: [],
           replacements: {},
           busy: false,
-          isMasterFixing: false,
-          scanStatus: { current: 0, total: 0, remaining: 0, currentName: "" },
-          errorMessage: ""
+          operationTitle: "❄️ Arctic Diagnostics in Progress...",
+          liveProgressLabel: "Initializing...",
+          countdownRemaining: null,
+          progressPercent: 0,
+          showTreeModal: false,
+          targetTreeKey: "",
+          treeData: { current_path: "", parent_path: "", items: [] }
         };
       },
       computed: {
-        operationTitle() {
-          return this.isMasterFixing ? "🚀 Master Repair in Progress..." : "❄️ Arctic Diagnostics in Progress...";
-        },
         activeFileName() {
           const f = this.batchFiles.find(x => x.path === this.activeFile);
           return f ? f.name : "";
@@ -368,37 +400,76 @@
         }
       },
       methods: {
-        autoFillFDrivePaths() {
-          this.paths = {
-            scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Playfields",
-            scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Prefabs",
-            game_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Playfields",
-            game_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Prefabs"
-          };
+        toggleOS() {
+          this.osMode = (this.osMode === 'win') ? 'lin' : 'win';
+          const isWin = (this.osMode === 'win');
+          for (const key of Object.keys(this.paths)) {
+            if (isWin) {
+              this.paths[key] = this.paths[key].replace(/\//g, '\\');
+            } else {
+              this.paths[key] = this.paths[key].replace(/\\/g, '/');
+            }
+          }
+        },
+        autoFillPaths() {
+          if (this.osMode === 'win') {
+            this.paths = {
+              scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Playfields",
+              scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Prefabs",
+              game_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Playfields",
+              game_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Prefabs"
+            };
+          } else {
+            this.paths = {
+              scenario_playfields: "/home/user/.steam/steam/steamapps/common/Empyrion - Galactic Survival/Content/Scenarios/Ascension-Reborn/Playfields",
+              scenario_prefabs: "/home/user/.steam/steam/steamapps/common/Empyrion - Galactic Survival/Content/Scenarios/Ascension-Reborn/Prefabs",
+              game_playfields: "/home/user/.steam/steam/steamapps/common/Empyrion - Galactic Survival/Content/Playfields",
+              game_prefabs: "/home/user/.steam/steam/steamapps/common/Empyrion - Galactic Survival/Content/Prefabs"
+            };
+          }
+        },
+        async openTreeModal(key) {
+          this.targetTreeKey = key;
+          this.showTreeModal = true;
+          await this.navigateTree(this.paths[key] || "");
+        },
+        async navigateTree(path) {
+          try {
+            const res = await fetch('/api/filesystem/list', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ current_path: path, os_mode: this.osMode })
+            });
+            const d = await res.json();
+            this.treeData = d;
+          } catch (e) {
+            alert("Error listing directories: " + e);
+          }
+        },
+        selectTreeFolder() {
+          if (this.targetTreeKey && this.treeData.current_path) {
+            this.paths[this.targetTreeKey] = this.treeData.current_path;
+          }
+          this.showTreeModal = false;
         },
         async openLocalFile(filePath) {
           if (!filePath) return;
           try {
-            const res = await fetch('/api/open-file', {
+            await fetch('/api/open-file', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({ file_path: filePath })
             });
-            if (!res.ok) {
-              const err = await res.json();
-              throw new Error(err.detail || "Could not launch editor.");
-            }
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Could not open editor: " + e);
           }
         },
         async startStreamScan() {
-          this.errorMessage = "";
           this.busy = true;
-          this.isMasterFixing = false;
+          this.operationTitle = "❄️ Scanning Playfields...";
           this.batchFiles = [];
-          this.activeFile = "";
-          this.activeIssues = [];
+          this.countdownRemaining = null;
+          this.progressPercent = 0;
 
           try {
             const response = await fetch('/api/batch/stream-scan', {
@@ -407,11 +478,6 @@
               body: JSON.stringify(this.paths)
             });
 
-            if (!response.ok) {
-              const err = await response.json();
-              throw new Error(err.detail || "Streaming scan failed.");
-            }
-
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
             let buffer = '';
@@ -428,44 +494,32 @@
                 if (block.startsWith('data: ')) {
                   const payload = JSON.parse(block.replace('data: ', ''));
                   if (payload.type === 'progress') {
-                    this.scanStatus.current = payload.current;
-                    this.scanStatus.total = payload.total;
-                    this.scanStatus.remaining = payload.total - payload.current;
-                    this.scanStatus.currentName = payload.file.name;
+                    this.liveProgressLabel = `Auditing (${payload.current} / ${payload.total}): ${payload.file.name}`;
+                    this.progressPercent = Math.round((payload.current / payload.total) * 100);
                     this.batchFiles.push(payload.file);
                   } else if (payload.type === 'complete') {
-                    if (payload.active_file) {
-                      this.selectFile(payload.active_file);
-                    }
+                    if (payload.active_file) this.selectFile(payload.active_file);
                   }
                 }
               }
             }
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Scanning error: " + e);
           } finally {
             this.busy = false;
           }
         },
         async startStreamMasterComplete() {
-          if (!confirm(`Run Master Complete across all ${this.batchFiles.length} playfields?`)) return;
-
-          this.errorMessage = "";
+          if (!confirm("Run Master Complete across all playfields? This will auto-resolve all issues and flush fixes to disk.")) return;
           this.busy = true;
-          this.isMasterFixing = true;
-          this.scanStatus.current = 0;
-          this.scanStatus.total = this.batchFiles.length;
-          this.scanStatus.remaining = this.batchFiles.length;
+          this.operationTitle = "🚀 Master Complete Repair in Progress...";
+          this.progressPercent = 0;
 
           try {
             const response = await fetch('/api/batch/stream-master-complete', {
-              method: 'POST'
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
             });
-
-            if (!response.ok) {
-              const err = await response.json();
-              throw new Error(err.detail || "Master Complete streaming failed.");
-            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
@@ -483,10 +537,9 @@
                 if (block.startsWith('data: ')) {
                   const payload = JSON.parse(block.replace('data: ', ''));
                   if (payload.type === 'progress') {
-                    this.scanStatus.current = payload.current;
-                    this.scanStatus.total = payload.total;
-                    this.scanStatus.remaining = payload.remaining;
-                    this.scanStatus.currentName = payload.name;
+                    this.countdownRemaining = payload.remaining;
+                    this.liveProgressLabel = `Repairing: ${payload.name} (Fixed: ${payload.repaired_count})`;
+                    this.progressPercent = Math.round((payload.current / payload.total) * 100);
                   } else if (payload.type === 'complete') {
                     this.batchFiles = payload.batch_files || this.batchFiles;
                     this.activeIssues = payload.active_issues || [];
@@ -496,10 +549,10 @@
               }
             }
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Master Complete Error: " + e);
           } finally {
             this.busy = false;
-            this.isMasterFixing = false;
+            this.countdownRemaining = null;
           }
         },
         async selectFile(path) {
@@ -513,11 +566,10 @@
             this.activeFile = d.active_file;
             this.activeIssues = d.issues || [];
             this.replacements = {};
-            
             const target = this.batchFiles.find(f => f.path === path);
             if (target) target.issue_count = this.activeIssues.length;
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Error selecting file: " + e);
           }
         },
         async autoCompleteSingle() {
@@ -529,7 +581,7 @@
             const target = this.batchFiles.find(f => f.path === this.activeFile);
             if (target) target.issue_count = d.issues.length;
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Error running AutoComplete: " + e);
           } finally {
             this.busy = false;
           }
@@ -553,7 +605,7 @@
             const target = this.batchFiles.find(f => f.path === this.activeFile);
             if (target) target.issue_count = d.issues.length;
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Error replacing POI: " + e);
           } finally {
             this.busy = false;
           }
@@ -574,7 +626,7 @@
             const target = this.batchFiles.find(f => f.path === this.activeFile);
             if (target) target.issue_count = d.issues.length;
           } catch (e) {
-            this.errorMessage = e.message;
+            alert("Error removing entry: " + e);
           } finally {
             this.busy = false;
           }
