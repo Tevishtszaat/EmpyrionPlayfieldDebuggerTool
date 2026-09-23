@@ -10,7 +10,6 @@
     @keyframes float-berg-right { 0%, 100% { transform: translateY(-4px) rotate(1deg); } 50% { transform: translateY(5px) rotate(-1deg); } }
     .iceberg-left-island { animation: float-berg-left 4.2s ease-in-out infinite; }
     .iceberg-right-island { animation: float-berg-right 3.6s ease-in-out infinite; }
-
     @keyframes ocean-swell { 0% { transform: translateX(0); } 100% { transform: translateX(-180px); } }
     .ocean-wave-anim { animation: ocean-swell 5s linear infinite; }
 
@@ -58,7 +57,7 @@
   <div id="app" class="h-screen flex flex-col">
 
     <!-- Top Header -->
-    <header class="bg-slate-950 p-4 border-b border-slate-800 flex justify-between items-center">
+    <header class="bg-slate-950 p-3.5 border-b border-slate-800 flex justify-between items-center">
       <div class="flex items-center gap-3">
         <h1 class="text-xl font-bold text-sky-400">Empyrion Playfield Debugger Tool</h1>
         
@@ -68,6 +67,24 @@
           <span>{{ osMode === 'win' ? '🪟 Windows (\\)' : '🐧 Linux (/)' }}</span>
           <span class="text-[10px] text-slate-400 underline">Switch</span>
         </button>
+
+        <!-- Editor Preferences Dropdown -->
+        <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700 px-2.5 py-1 rounded-lg text-xs">
+          <label class="text-slate-400 font-semibold">Editor:</label>
+          <select v-model="editorChoice" class="bg-slate-950 text-sky-300 rounded p-1 border border-slate-800 text-[11px] font-mono">
+            <option value="default">Default App (.yaml / .txt / .md)</option>
+            <option v-if="osMode === 'win'" value="notepad++">Notepad++</option>
+            <option v-if="osMode === 'win'" value="notepad">Notepad (System)</option>
+            <option value="code">VS Code (code)</option>
+            <option v-if="osMode === 'lin'" value="gedit">Gedit (GNOME)</option>
+            <option v-if="osMode === 'lin'" value="kate">Kate (KDE)</option>
+            <option v-if="osMode === 'lin'" value="mousepad">Mousepad (XFCE)</option>
+            <option value="subl">Sublime Text</option>
+            <option value="custom">Custom Command / Path</option>
+          </select>
+          <input v-if="editorChoice === 'custom'" v-model="customEditorCmd" placeholder="e.g. nano, subl, or path" 
+                 class="bg-slate-950 border border-slate-700 text-sky-300 px-2 py-0.5 rounded text-[11px] w-36">
+        </div>
 
         <button @click="autoFillPaths" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-2.5 py-1 rounded">
           ⚡ Auto-Fill Preset Paths
@@ -163,7 +180,7 @@
           </div>
           <div class="flex gap-2">
             <button @click="openLocalFile(activeFile)" class="bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-1.5">
-              <span>📄 Open Editor</span>
+              <span>📄 Open in {{ displayEditorName }}</span>
             </button>
             <button @click="autoCompleteSingle" :disabled="busy || activeIssues.length === 0" 
                     class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 rounded text-xs font-bold transition">
@@ -203,7 +220,6 @@
       <div v-if="showTreeModal" class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50">
         <div class="bg-slate-900 border border-slate-700 rounded-2xl w-[560px] h-[480px] flex flex-col shadow-2xl overflow-hidden">
           
-          <!-- Tree Header -->
           <div class="p-3 bg-slate-950 border-b border-slate-800 flex justify-between items-center">
             <div class="text-xs font-bold text-sky-400 flex items-center gap-2">
               <span>📁 Browse Folders</span>
@@ -212,39 +228,42 @@
             <button @click="showTreeModal = false" class="text-xs text-slate-400 hover:text-white">✕</button>
           </div>
 
-          <!-- Current Path Breadcrumb -->
           <div class="p-2 bg-slate-950/40 border-b border-slate-800 text-[11px] font-mono text-slate-300 truncate">
             Path: {{ treeData.current_path || 'Root' }}
           </div>
 
-          <!-- Folder List Body -->
           <div class="flex-1 p-3 overflow-y-auto space-y-1 text-xs">
             <div v-if="treeData.parent_path" @click="navigateTree(treeData.parent_path)"
                  class="p-1.5 bg-slate-800/40 hover:bg-slate-800 rounded cursor-pointer text-amber-300 flex items-center gap-2">
-              <span>⤴️</span> <span>[Up to Parent Directory]</span>
+              <span>⬆️</span><span>.. (Up One Level)</span>
             </div>
+
             <div v-for="item in treeData.items" :key="item.path" @click="navigateTree(item.path)"
-                 class="p-1.5 hover:bg-sky-950/60 rounded cursor-pointer flex justify-between items-center text-slate-200">
-              <span class="flex items-center gap-2 truncate">📁 {{ item.name }}</span>
-              <span class="text-[10px] text-slate-500 font-mono">dir</span>
+                 class="p-1.5 hover:bg-slate-800/70 rounded cursor-pointer flex items-center gap-2 text-slate-200">
+              <span>📁</span><span class="truncate">{{ item.name }}</span>
+            </div>
+
+            <div v-if="!treeData.items.length" class="text-center py-10 text-slate-500">
+              No subfolders found in this directory.
             </div>
           </div>
 
-          <!-- Tree Footer -->
           <div class="p-3 bg-slate-950 border-t border-slate-800 flex justify-between items-center">
-            <button @click="showTreeModal = false" class="text-xs text-slate-400 hover:text-white px-3 py-1">Cancel</button>
-            <button @click="selectTreeFolder" :disabled="!treeData.current_path" 
-                    class="bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-bold text-xs px-4 py-1.5 rounded transition">
-              Select This Folder
-            </button>
+            <span class="text-[11px] text-slate-400 truncate max-w-sm">Selected: {{ treeData.current_path }}</span>
+            <div class="flex gap-2">
+              <button @click="showTreeModal = false" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-bold">Cancel</button>
+              <button @click="selectCurrentTreeFolder" class="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded text-xs font-bold">Select This Folder</button>
+            </div>
           </div>
 
         </div>
       </div>
 
-      <!-- ARCTIC ICEBERG CHASE DIORAMA WITH LIVE COUNTDOWN (DURING BUSY) -->
+      <!-- ARCTIC ANIMATION MODAL WITH LIVE COUNTDOWN (DURING BUSY) -->
       <div v-if="busy" class="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center z-50">
+        
         <div class="bg-slate-900/95 border border-sky-800/80 p-6 rounded-3xl shadow-2xl flex flex-col items-center w-[540px]">
+          
           <h3 class="text-sm font-bold text-sky-300 mb-1 flex items-center gap-2">
             <span>{{ operationTitle }}</span>
           </h3>
@@ -322,7 +341,6 @@
               </svg>
             </div>
 
-            <!-- Water Splashes -->
             <div class="water-splash-1">
               <svg width="44" height="20" viewBox="0 0 44 20" fill="none">
                 <ellipse cx="22" cy="10" rx="20" ry="7" stroke="#38bdf8" stroke-width="2.5" fill="none"/>
@@ -334,7 +352,6 @@
               </svg>
             </div>
 
-            <!-- Front Ocean Swell -->
             <div class="absolute bottom-0 left-0 right-0 h-28 pointer-events-none z-25 overflow-hidden">
               <svg class="ocean-wave-anim absolute bottom-0 left-0 w-[720px] h-20 opacity-80" viewBox="0 0 360 40" fill="#0284c7">
                 <path d="M0,15 Q45,25 90,15 T180,15 T270,15 T360,15 V40 H0 Z"/>
@@ -343,17 +360,14 @@
             </div>
           </div>
 
-          <!-- Dynamic Live Countdown Tracker -->
+          <!-- Dynamic Status Countdown -->
           <div class="w-full mt-4 flex flex-col items-center">
-            <div class="text-xs font-mono text-sky-300 mb-1 flex items-center justify-between w-full">
-              <span>{{ liveProgressLabel }}</span>
-              <span class="text-amber-400 font-bold" v-if="countdownRemaining !== null">
-                ⏳ {{ countdownRemaining }} files remaining
-              </span>
+            <div class="text-xs font-mono text-sky-300 mb-1">
+              {{ statusMessage }}
             </div>
             <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-sky-900 mt-1">
               <div class="bg-gradient-to-r from-sky-400 via-teal-300 to-indigo-500 h-2.5 rounded-full transition-all duration-200" 
-                   :style="{ width: progressPercent + '%' }">
+                   :style="{ width: progressPercentage + '%' }">
               </div>
             </div>
           </div>
@@ -369,7 +383,9 @@
     createApp({
       data() {
         return {
-          osMode: 'win', // 'win' or 'lin'
+          osMode: "win",
+          editorChoice: "default",
+          customEditorCmd: "",
           paths: {
             scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Playfields",
             scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Prefabs",
@@ -381,12 +397,10 @@
           activeIssues: [],
           replacements: {},
           busy: false,
-          operationTitle: "❄️ Arctic Diagnostics in Progress...",
-          liveProgressLabel: "Initializing...",
-          countdownRemaining: null,
-          progressPercent: 0,
+          currentAction: "scan",
+          scanStatus: { current: 0, total: 0, remaining: 0, currentName: "" },
           showTreeModal: false,
-          targetTreeKey: "",
+          treeTargetKey: "",
           treeData: { current_path: "", parent_path: "", items: [] }
         };
       },
@@ -397,22 +411,41 @@
         },
         totalIssuesCount() {
           return this.batchFiles.reduce((acc, f) => acc + (f.issue_count || 0), 0);
+        },
+        displayEditorName() {
+          if (this.editorChoice === 'default') return 'Default Editor';
+          if (this.editorChoice === 'notepad++') return 'Notepad++';
+          if (this.editorChoice === 'notepad') return 'Notepad';
+          if (this.editorChoice === 'code') return 'VS Code';
+          if (this.editorChoice === 'custom') return this.customEditorCmd || 'Custom Editor';
+          return this.editorChoice.toUpperCase();
+        },
+        operationTitle() {
+          return this.currentAction === 'scan' ? '❄️ Arctic Diagnostics in Progress...' : '🚀 Master Complete Auto-Repairing...';
+        },
+        statusMessage() {
+          if (this.currentAction === 'complete') {
+            return `Repairing (${this.scanStatus.remaining} remaining): ${this.scanStatus.currentName}`;
+          }
+          return `Auditing (${this.scanStatus.current} / ${this.scanStatus.total}): ${this.scanStatus.currentName}`;
+        },
+        progressPercentage() {
+          if (this.scanStatus.total <= 0) return 75;
+          return (this.scanStatus.current / this.scanStatus.total) * 100;
         }
       },
       methods: {
         toggleOS() {
-          this.osMode = (this.osMode === 'win') ? 'lin' : 'win';
-          const isWin = (this.osMode === 'win');
-          for (const key of Object.keys(this.paths)) {
-            if (isWin) {
-              this.paths[key] = this.paths[key].replace(/\//g, '\\');
-            } else {
-              this.paths[key] = this.paths[key].replace(/\\/g, '/');
-            }
+          this.osMode = (this.osMode === "win") ? "lin" : "win";
+          const fromSep = (this.osMode === "win") ? "/" : "\\\\";
+          const toSep = (this.osMode === "win") ? "\\" : "/";
+          
+          for (const k in this.paths) {
+            this.paths[k] = this.paths[k].split(fromSep).join(toSep);
           }
         },
         autoFillPaths() {
-          if (this.osMode === 'win') {
+          if (this.osMode === "win") {
             this.paths = {
               scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Playfields",
               scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension-Reborn\\Prefabs",
@@ -429,47 +462,55 @@
           }
         },
         async openTreeModal(key) {
-          this.targetTreeKey = key;
+          this.treeTargetKey = key;
           this.showTreeModal = true;
           await this.navigateTree(this.paths[key] || "");
         },
-        async navigateTree(path) {
+        async navigateTree(targetPath) {
           try {
             const res = await fetch('/api/filesystem/list', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ current_path: path, os_mode: this.osMode })
+              body: JSON.stringify({ current_path: targetPath, os_mode: this.osMode })
             });
             const d = await res.json();
             this.treeData = d;
           } catch (e) {
-            alert("Error listing directories: " + e);
+            alert("Error reading directory: " + e);
           }
         },
-        selectTreeFolder() {
-          if (this.targetTreeKey && this.treeData.current_path) {
-            this.paths[this.targetTreeKey] = this.treeData.current_path;
+        selectCurrentTreeFolder() {
+          if (this.treeTargetKey && this.treeData.current_path) {
+            this.paths[this.treeTargetKey] = this.treeData.current_path;
           }
           this.showTreeModal = false;
         },
         async openLocalFile(filePath) {
           if (!filePath) return;
           try {
-            await fetch('/api/open-file', {
+            const res = await fetch('/api/open-file', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ file_path: filePath })
+              body: JSON.stringify({ 
+                file_path: filePath, 
+                editor_choice: this.editorChoice,
+                custom_editor_cmd: this.customEditorCmd 
+              })
             });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "Could not launch editor.");
+            }
           } catch (e) {
-            alert("Could not open editor: " + e);
+            alert("Editor error: " + e.message);
           }
         },
         async startStreamScan() {
           this.busy = true;
-          this.operationTitle = "❄️ Scanning Playfields...";
+          this.currentAction = "scan";
           this.batchFiles = [];
-          this.countdownRemaining = null;
-          this.progressPercent = 0;
+          this.activeFile = "";
+          this.activeIssues = [];
 
           try {
             const response = await fetch('/api/batch/stream-scan', {
@@ -494,8 +535,9 @@
                 if (block.startsWith('data: ')) {
                   const payload = JSON.parse(block.replace('data: ', ''));
                   if (payload.type === 'progress') {
-                    this.liveProgressLabel = `Auditing (${payload.current} / ${payload.total}): ${payload.file.name}`;
-                    this.progressPercent = Math.round((payload.current / payload.total) * 100);
+                    this.scanStatus.current = payload.current;
+                    this.scanStatus.total = payload.total;
+                    this.scanStatus.currentName = payload.file.name;
                     this.batchFiles.push(payload.file);
                   } else if (payload.type === 'complete') {
                     if (payload.active_file) this.selectFile(payload.active_file);
@@ -504,23 +546,18 @@
               }
             }
           } catch (e) {
-            alert("Scanning error: " + e);
+            alert("Scan failed: " + e.message);
           } finally {
             this.busy = false;
           }
         },
         async startStreamMasterComplete() {
-          if (!confirm("Run Master Complete across all playfields? This will auto-resolve all issues and flush fixes to disk.")) return;
+          if (!confirm("Run Master Complete across all playfields?")) return;
           this.busy = true;
-          this.operationTitle = "🚀 Master Complete Repair in Progress...";
-          this.progressPercent = 0;
+          this.currentAction = "complete";
 
           try {
-            const response = await fetch('/api/batch/stream-master-complete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' }
-            });
-
+            const response = await fetch('/api/batch/stream-master-complete', { method: 'POST' });
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
             let buffer = '';
@@ -537,11 +574,12 @@
                 if (block.startsWith('data: ')) {
                   const payload = JSON.parse(block.replace('data: ', ''));
                   if (payload.type === 'progress') {
-                    this.countdownRemaining = payload.remaining;
-                    this.liveProgressLabel = `Repairing: ${payload.name} (Fixed: ${payload.repaired_count})`;
-                    this.progressPercent = Math.round((payload.current / payload.total) * 100);
+                    this.scanStatus.current = payload.current;
+                    this.scanStatus.total = payload.total;
+                    this.scanStatus.remaining = payload.remaining;
+                    this.scanStatus.currentName = payload.name;
                   } else if (payload.type === 'complete') {
-                    this.batchFiles = payload.batch_files || this.batchFiles;
+                    this.batchFiles = payload.batch_files || [];
                     this.activeIssues = payload.active_issues || [];
                     alert(`Master Complete Finished! Auto-repaired ${payload.repaired_count} playfields.`);
                   }
@@ -549,10 +587,9 @@
               }
             }
           } catch (e) {
-            alert("Master Complete Error: " + e);
+            alert("Master Complete failed: " + e.message);
           } finally {
             this.busy = false;
-            this.countdownRemaining = null;
           }
         },
         async selectFile(path) {
@@ -569,7 +606,7 @@
             const target = this.batchFiles.find(f => f.path === path);
             if (target) target.issue_count = this.activeIssues.length;
           } catch (e) {
-            alert("Error selecting file: " + e);
+            alert("Select error: " + e.message);
           }
         },
         async autoCompleteSingle() {
@@ -581,7 +618,7 @@
             const target = this.batchFiles.find(f => f.path === this.activeFile);
             if (target) target.issue_count = d.issues.length;
           } catch (e) {
-            alert("Error running AutoComplete: " + e);
+            alert("AutoComplete error: " + e.message);
           } finally {
             this.busy = false;
           }
@@ -605,7 +642,7 @@
             const target = this.batchFiles.find(f => f.path === this.activeFile);
             if (target) target.issue_count = d.issues.length;
           } catch (e) {
-            alert("Error replacing POI: " + e);
+            alert("Replace error: " + e.message);
           } finally {
             this.busy = false;
           }
@@ -616,17 +653,14 @@
             const res = await fetch('/api/remove-poi', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({
-                source: issue.source,
-                poi_index: issue.index
-              })
+              body: JSON.stringify({ source: issue.source, poi_index: issue.index })
             });
             const d = await res.json();
             this.activeIssues = d.issues || [];
             const target = this.batchFiles.find(f => f.path === this.activeFile);
             if (target) target.issue_count = d.issues.length;
           } catch (e) {
-            alert("Error removing entry: " + e);
+            alert("Prune error: " + e.message);
           } finally {
             this.busy = false;
           }

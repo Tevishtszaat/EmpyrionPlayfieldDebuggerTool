@@ -15,7 +15,13 @@ from backend.indexer import AssetIndexer
 from backend.validator import PlayfieldValidator
 
 app = FastAPI()
-STATE = {"ast": None, "indexer": None, "active_file": "", "batch_files": []}
+STATE = {
+    "ast": None, 
+    "indexer": None, 
+    "active_file": "", 
+    "batch_files": [],
+    "editor_cmd": "default"
+}
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -43,6 +49,8 @@ class PruneRequest(BaseModel):
 
 class OpenFileRequest(BaseModel):
     file_path: str
+    editor_choice: str = "default"
+    custom_editor_cmd: str = ""
 
 class FixDuplicateKeyRequest(BaseModel):
     line: int
@@ -54,11 +62,9 @@ class ListDirRequest(BaseModel):
 
 @app.post("/api/filesystem/list")
 def list_filesystem(req: ListDirRequest):
-    """Cross-platform directory explorer for web-based browsing."""
     is_win = (req.os_mode == "win") or (platform.system() == "Windows")
     target = req.current_path.strip()
 
-    # Default to root drives or root folder
     if not target:
         if is_win:
             import string
@@ -73,7 +79,6 @@ def list_filesystem(req: ListDirRequest):
 
     p = Path(target)
     if not p.exists():
-        # Fallback to home
         p = Path.home()
 
     items = []
@@ -82,11 +87,7 @@ def list_filesystem(req: ListDirRequest):
             for entry in it:
                 try:
                     if entry.is_dir() and not entry.name.startswith(".") and entry.name != ".epd_backups":
-                        items.append({
-                            "name": entry.name,
-                            "path": entry.path,
-                            "is_dir": True
-                        })
+                        items.append({"name": entry.name, "path": entry.path, "is_dir": True})
                 except Exception:
                     pass
     except Exception as e:
@@ -104,29 +105,61 @@ def open_local_file(req: OpenFileRequest):
         raise HTTPException(status_code=404, detail=f"File does not exist: {p}")
 
     is_win = platform.system() == "Windows"
+    choice = req.editor_choice.lower().strip()
+    custom = req.custom_editor_cmd.strip()
+
     try:
+        # 1. Custom Command / Executable specified by user
+        if choice == "custom" and custom:
+            subprocess.Popen([custom, str(p)])
+            return {"status": "ok", "app": custom}
+
+        # 2. Windows-Specific Options
         if is_win:
-            candidates = [
-                r"C:\Program Files\Notepad++\notepad++.exe",
-                r"C:\Program Files (x86)\Notepad++\notepad++.exe",
-                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Notepad++\notepad++.exe")
-            ]
-            for c in candidates:
-                if os.path.exists(c):
-                    subprocess.Popen([c, str(p)])
-                    return {"status": "ok", "app": "Notepad++"}
+            if choice == "notepad++":
+                candidates = [
+                    r"C:\Program Files\Notepad++\notepad++.exe",
+                    r"C:\Program Files (x86)\Notepad++\notepad++.exe",
+                    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Notepad++\notepad++.exe")
+                ]
+                for c in candidates:
+                    if os.path.exists(c):
+                        subprocess.Popen([c, str(p)])
+                        return {"status": "ok", "app": "Notepad++"}
+            elif choice == "code":
+                subprocess.Popen(["code", str(p)], shell=True)
+                return {"status": "ok", "app": "VS Code"}
+            elif choice == "notepad":
+                subprocess.Popen(["notepad.exe", str(p)])
+                return {"status": "ok", "app": "Notepad"}
+
+            # Default fallback for Windows (.yaml, .txt, .md default app)
             os.startfile(str(p))
-            return {"status": "ok", "app": "Default Editor"}
+            return {"status": "ok", "app": "System Default"}
+
+        # 3. Linux-Specific Options
         else:
-            # Linux: try gedit, kate, nano, or xdg-open
-            for editor in ["gedit", "kate", "xdg-open"]:
-                if subprocess.run(["which", editor], capture_output=True).returncode == 0:
-                    subprocess.Popen([editor, str(p)])
-                    return {"status": "ok", "app": editor}
+            if choice == "code":
+                subprocess.Popen(["code", str(p)])
+                return {"status": "ok", "app": "VS Code"}
+            elif choice in ["gedit", "kate", "mousepad", "subl"]:
+                subprocess.Popen([choice, str(p)])
+                return {"status": "ok", "app": choice}
+
+            # Default fallback for Linux
             subprocess.Popen(["xdg-open", str(p)])
             return {"status": "ok", "app": "xdg-open"}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not open editor: {str(e)}")
+        # Final universal fallback
+        try:
+            if is_win:
+                os.startfile(str(p))
+            else:
+                subprocess.Popen(["xdg-open", str(p)])
+            return {"status": "ok", "app": "Fallback Default"}
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=f"Could not launch editor: {str(e2)}")
 
 @app.post("/api/fix-duplicate-key")
 def fix_duplicate_key(req: FixDuplicateKeyRequest):
