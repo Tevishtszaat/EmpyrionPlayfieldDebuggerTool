@@ -1,0 +1,25 @@
+﻿name: Build Desktop Binaries
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --onedir --windowed --add-data "frontend/static;frontend/static" --name "EmpyrionPlayfieldDebugger" main.py
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: EPD-${{ runner.os }}
+        path: dist/EmpyrionPlayfieldDebugger/

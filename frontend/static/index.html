@@ -1,0 +1,275 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Empyrion Playfield Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div id="app" class="h-screen flex flex-col">
+    <!-- Top Header -->
+    <header class="bg-slate-950 p-4 border-b border-slate-800 flex justify-between items-center">
+      <div class="flex items-center gap-3">
+        <h1 class="text-xl font-bold text-sky-400">Empyrion Playfield Debugger Tool</h1>
+        <span class="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700">Studio Edition</span>
+        <button @click="autoFillFDrivePaths" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-2.5 py-1 rounded">
+          ⚡ Auto-Fill F:\ Steam Paths
+        </button>
+      </div>
+      
+      <div class="flex gap-2">
+        <button @click="scanMasterFolder" :disabled="busy" class="bg-sky-600 hover:bg-sky-500 disabled:opacity-40 px-5 py-2 rounded text-xs font-bold transition shadow-lg">
+          {{ busy ? 'Scanning...' : '📁 Scan All Directories' }}
+        </button>
+        <button @click="masterComplete" :disabled="!batchFiles.length || busy" class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 px-5 py-2 rounded text-xs font-bold transition">
+          🚀 Master Complete All
+        </button>
+      </div>
+    </header>
+
+    <!-- Error Banner (Shows if folder path is wrong) -->
+    <div v-if="errorMessage" class="bg-rose-950 border-b border-rose-800 p-3 flex justify-between items-center text-xs text-rose-200">
+      <div><strong>Notice:</strong> {{ errorMessage }}</div>
+      <button @click="errorMessage = ''" class="text-xs underline text-rose-400 hover:text-white">Dismiss</button>
+    </div>
+
+    <!-- 4 Directory Selectors (Pre-filled with your actual F:\ paths) -->
+    <div class="bg-slate-950/70 p-3 border-b border-slate-800 grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+      <div>
+        <label class="text-sky-400 font-bold block mb-1">1. Scenario Playfields</label>
+        <input v-model="paths.scenario_playfields" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
+      </div>
+
+      <div>
+        <label class="text-emerald-400 font-bold block mb-1">2. Scenario Prefabs</label>
+        <input v-model="paths.scenario_prefabs" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
+      </div>
+
+      <div>
+        <label class="text-amber-400 font-bold block mb-1">3. Main Game Playfields</label>
+        <input v-model="paths.game_playfields" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
+      </div>
+
+      <div>
+        <label class="text-purple-400 font-bold block mb-1">4. Main Game Prefabs</label>
+        <input v-model="paths.game_prefabs" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
+      </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex overflow-hidden">
+      <!-- Left Queue -->
+      <aside class="w-80 border-r border-slate-800 bg-slate-950/30 overflow-y-auto">
+        <div class="p-3 text-xs font-bold text-slate-400 border-b border-slate-800 flex justify-between">
+          <span>SCENARIO QUEUE ({{ batchFiles.length }})</span>
+          <span class="text-amber-400 font-bold">{{ totalIssuesCount }} Issues</span>
+        </div>
+        <div v-for="f in batchFiles" :key="f.path" @click="selectFile(f.path)" 
+             :class="activeFile === f.path ? 'bg-sky-950/70 border-l-4 border-sky-400' : 'hover:bg-slate-800/40'" 
+             class="p-3 border-b border-slate-800/40 cursor-pointer flex justify-between items-center transition">
+          <div class="truncate text-xs font-medium">{{ f.name }}</div>
+          <span class="text-[10px] px-2 py-0.5 rounded font-bold" 
+                :class="f.issue_count === 0 ? 'bg-emerald-950 text-emerald-400' : 'bg-amber-950 text-amber-400 border border-amber-800'">
+            {{ f.issue_count }} err
+          </span>
+        </div>
+      </aside>
+
+      <!-- Center Workspace -->
+      <main class="flex-1 p-6 overflow-y-auto">
+        <div v-if="activeFile" class="flex justify-between items-center mb-6 pb-2 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-sky-400">{{ activeFileName }}</h2>
+            <p class="text-[11px] text-slate-400">Select replacement from drop-down or remove entry to clear error.</p>
+          </div>
+          <button @click="autoCompleteSingle" :disabled="busy || activeIssues.length === 0" 
+                  class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 rounded text-xs font-bold transition">
+            ⚡ AutoComplete This File
+          </button>
+        </div>
+
+        <div v-if="activeIssues.length === 0" class="text-center py-24 text-slate-500">
+          <p class="text-sm">{{ batchFiles.length ? '✓ No issues found in selected playfield.' : 'Click "Scan All Directories" to load your scenario playfields.' }}</p>
+          <p v-if="batchFiles.length && totalIssuesCount > 0" class="text-xs text-amber-400/80 mt-2">
+            Tip: Click any playfield on the left with an error badge to inspect its bugs!
+          </p>
+        </div>
+
+        <!-- Issue Cards List -->
+        <div v-for="issue in activeIssues" :key="issue.id" class="bg-slate-800/80 border-l-4 border-amber-500 p-4 rounded mb-3 flex justify-between items-center shadow-md">
+          <div class="mr-4">
+            <div class="text-xs font-bold text-amber-400">{{ issue.severity }}: {{ issue.message }}</div>
+            <div class="text-[11px] text-slate-300 mt-1">Current: <code class="text-rose-300 bg-slate-950 px-1 py-0.5 rounded">{{ issue.current_value }}</code></div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <select v-model="replacements[issue.index]" class="bg-slate-950 text-xs p-1.5 rounded border border-slate-700 max-w-[220px]">
+              <option value="" disabled>Choose Replacement...</option>
+              <option v-for="name in issue.suggestions" :key="name" :value="name">{{ name }}</option>
+            </select>
+            <button @click="fixIssue(issue.index, issue.group_name)" :disabled="!replacements[issue.index]" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 rounded text-xs font-bold">Apply</button>
+
+            <button @click="pruneIssue(issue.index)" class="bg-rose-950 hover:bg-rose-900 border border-rose-700 text-rose-300 px-3 py-1.5 rounded text-xs font-bold">
+              Remove Entry
+            </button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+    createApp({
+      data() {
+        return {
+          // Pre-configured with the exact paths shown in your previous screenshots
+          paths: {
+            scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension UnChained\\Playfields",
+            scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension UnChained\\Prefabs",
+            game_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Playfields",
+            game_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Prefabs"
+          },
+          batchFiles: [],
+          activeFile: "",
+          activeIssues: [],
+          replacements: {},
+          busy: false,
+          errorMessage: ""
+        };
+      },
+      computed: {
+        activeFileName() {
+          const f = this.batchFiles.find(x => x.path === this.activeFile);
+          return f ? f.name : "";
+        },
+        totalIssuesCount() {
+          return this.batchFiles.reduce((acc, f) => acc + (f.issue_count || 0), 0);
+        }
+      },
+      methods: {
+        autoFillFDrivePaths() {
+          this.paths = {
+            scenario_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension UnChained\\Playfields",
+            scenario_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Scenarios\\Ascension UnChained\\Prefabs",
+            game_playfields: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Playfields",
+            game_prefabs: "F:\\SteamLibrary\\steamapps\\common\\Empyrion - Galactic Survival\\Content\\Prefabs"
+          };
+        },
+        async scanMasterFolder() {
+          this.errorMessage = "";
+          this.busy = true;
+
+          try {
+            const res = await fetch('/api/batch/scan', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(this.paths)
+            });
+
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "Scanning failed.");
+            }
+
+            const d = await res.json();
+            this.batchFiles = d.files || [];
+            this.activeFile = d.active_file || "";
+            if (this.activeFile) {
+              await this.selectFile(this.activeFile);
+            }
+          } catch (e) {
+            this.errorMessage = e.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async selectFile(path) {
+          this.busy = true;
+          try {
+            const res = await fetch('/api/batch/select', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ file_path: path })
+            });
+            const d = await res.json();
+            this.activeFile = d.active_file;
+            this.activeIssues = d.issues || [];
+            this.replacements = {};
+          } catch (e) {
+            this.errorMessage = e.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async masterComplete() {
+          if (!confirm("Run Master Complete across all detected issues?")) return;
+          this.busy = true;
+          try {
+            const res = await fetch('/api/batch/master-complete', { method: 'POST' });
+            const d = await res.json();
+            this.batchFiles = d.batch_files || [];
+            this.activeIssues = d.active_issues || [];
+          } catch (e) {
+            this.errorMessage = e.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async autoCompleteSingle() {
+          this.busy = true;
+          try {
+            const res = await fetch('/api/autocomplete', { method: 'POST' });
+            const d = await res.json();
+            this.activeIssues = d.issues || [];
+            const target = this.batchFiles.find(f => f.path === this.activeFile);
+            if (target) target.issue_count = d.issues.length;
+          } catch (e) {
+            this.errorMessage = e.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async fixIssue(idx, groupName) {
+          this.busy = true;
+          try {
+            const res = await fetch('/api/replace-poi', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ poi_index: idx, new_prefab: this.replacements[idx], group_name: groupName })
+            });
+            const d = await res.json();
+            this.activeIssues = d.issues || [];
+            delete this.replacements[idx];
+            const target = this.batchFiles.find(f => f.path === this.activeFile);
+            if (target) target.issue_count = d.issues.length;
+          } catch (e) {
+            this.errorMessage = e.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async pruneIssue(idx) {
+          this.busy = true;
+          try {
+            const res = await fetch('/api/remove-poi', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ poi_index: idx })
+            });
+            const d = await res.json();
+            this.activeIssues = d.issues || [];
+            const target = this.batchFiles.find(f => f.path === this.activeFile);
+            if (target) target.issue_count = d.issues.length;
+          } catch (e) {
+            this.errorMessage = e.message;
+          } finally {
+            this.busy = false;
+          }
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
