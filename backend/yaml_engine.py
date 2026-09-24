@@ -10,7 +10,6 @@ from ruamel.yaml.constructor import DuplicateKeyError
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
-# Prevent ruamel.yaml from wrapping ANY long flow sequences or plain strings
 yaml.width = 100000
 
 def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
@@ -30,7 +29,7 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
         while i < n:
             line = lines[i]
 
-            # 1. Check Description: ...
+            # 1. Description: ...
             desc_match = re.match(r'^([ \t]*Description:)\s*(.*)$', line)
             if desc_match:
                 prefix = desc_match.group(1)
@@ -38,10 +37,18 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 starts_quote = first_val.startswith('"') or first_val.startswith("'")
                 qchar = first_val[0] if starts_quote else None
 
-                if starts_quote and len(first_val) > 1 and first_val.endswith(qchar) and not first_val.endswith('\\' + qchar):
-                    new_lines.append(line)
-                    i += 1
-                    continue
+                # Single-line check (respecting escaped quotes)
+                if starts_quote and len(first_val) > 1 and first_val.endswith(qchar):
+                    escaped = False
+                    for c in reversed(first_val[:-1]):
+                        if c == '\\':
+                            escaped = not escaped
+                        else:
+                            break
+                    if not escaped:
+                        new_lines.append(line)
+                        i += 1
+                        continue
 
                 parts = [first_val.lstrip('"\'').rstrip('"\'')] if first_val else []
                 j = i + 1
@@ -51,11 +58,26 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                         break
                     stripped = next_line.strip()
                     if starts_quote and qchar in stripped:
-                        p = stripped.split(qchar)[0].strip()
-                        if p:
-                            parts.append(p)
-                        j += 1
-                        break
+                        # Find unescaped quote delimiter
+                        idx_q = -1
+                        for idx_c, char in enumerate(stripped):
+                            if char == qchar:
+                                num_slashes = 0
+                                k = idx_c - 1
+                                while k >= 0 and stripped[k] == '\\':
+                                    num_slashes += 1
+                                    k -= 1
+                                if num_slashes % 2 == 0:
+                                    idx_q = idx_c
+                                    break
+                        if idx_q != -1:
+                            p = stripped[:idx_q].strip()
+                            if p:
+                                parts.append(p)
+                            j += 1
+                            break
+                        else:
+                            parts.append(stripped)
                     else:
                         if stripped:
                             parts.append(stripped)
@@ -68,7 +90,7 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 2. Check Biome: [ ... ] multi-line wrap
+            # 2. Biome: [ ... ] multi-line wrap
             biome_match = re.match(r'^([ \t]*Biome:[ \t]*\[)(.*)$', line)
             if biome_match and not line.rstrip().endswith("]"):
                 prefix = biome_match.group(1)
@@ -90,9 +112,7 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                             parts.append(stripped)
                     j += 1
 
-                # Clean up commas and spaces inside [Biome1, Biome2, ...]
                 combined_biomes = " ".join(parts)
-                # Ensure clean comma spacing: "Biome1, Biome2"
                 tokens = [t.strip().strip(',').strip() for t in combined_biomes.split(',') if t.strip()]
                 clean_biome_str = ", ".join(tokens)
                 new_lines.append(f'{prefix}{clean_biome_str}]\n')
@@ -100,23 +120,20 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 3. Check Value: ... multi-line wrap (Container items, MapMarker, etc.)
+            # 3. Value: ... multi-line wrap
             value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
             if value_match:
                 prefix = value_match.group(1)
                 first_val = value_match.group(2).rstrip('\r\n')
 
-                # Check if the next line is an indented continuation (starts with spaces and no new key)
                 j = i + 1
                 is_wrapped = False
                 parts = [first_val.strip()] if first_val.strip() else []
 
                 while j < n:
                     next_line = lines[j]
-                    # Stop if it's a new YAML key or list bullet
                     if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) or next_line.strip().startswith("-"):
                         break
-                    # If it's indented continuation text (e.g. '    Electronics:20, WheatStage1:9...')
                     if next_line.startswith(" ") or next_line.startswith("\t"):
                         stripped = next_line.strip()
                         if stripped:
@@ -128,7 +145,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
 
                 if is_wrapped:
                     combined_val = " ".join(parts)
-                    # Clean up multiple spaces around commas
                     combined_val = re.sub(r'[ \t]*,[ \t]*', ', ', combined_val)
                     combined_val = re.sub(r'[ \t]+', ' ', combined_val).strip()
                     new_lines.append(f'{prefix} {combined_val}\n')
@@ -159,10 +175,7 @@ class PlayfieldAST:
         self.data = None
         self.parse_error = None
         self.duplicate_key_info = None
-        
-        # 1. Enforce strict single lines for Description, Biome, and Value before parsing
         self.sanitize_lines()
-        # 2. Parse YAML
         self.load()
 
     def sanitize_lines(self) -> bool:
@@ -202,8 +215,6 @@ class PlayfieldAST:
             yaml.dump(self.data, f)
             f.flush()
             os.fsync(f.fileno())
-
-        # Post-dump safety sweep: Guarantees ruamel didn't wrap Biome, Value, or Description
         enforce_strict_single_lines_on_disk(self.path)
 
     def remove_duplicate_key_line(self, line_number: int, key_name: str) -> bool:
@@ -239,31 +250,51 @@ class PlayfieldAST:
         return False
 
     def get_container(self, source: str):
+        """Strict container resolution: Random never mutates Fixed, and vice versa."""
         if not self.data or not isinstance(self.data, dict):
             return None
         if source == "Objects":
             return self.data.get("Objects", [])
         elif source == "Fixed":
-            return self.data.get("POIs", {}).get("Fixed", [])
+            pois = self.data.get("POIs", {})
+            return pois.get("Fixed", []) if isinstance(pois, dict) else []
+        elif source == "Random":
+            pois = self.data.get("POIs", {})
+            return pois.get("Random", []) if isinstance(pois, dict) else []
         elif source == "DroneSpawns":
             return self.data.get("DroneSpawns", [])
-        else:
-            pois = self.data.get("POIs", {}).get("Random", [])
-            if not pois and "POIs" in self.data and "Fixed" in self.data["POIs"]:
-                pois = self.data["POIs"]["Fixed"]
-            return pois
+        return None
 
-    def correct_biome(self, source: str, index: int, new_biome: str):
+    def correct_biome(self, source: str, index: int, new_biome: str, bad_biomes=None, save_immediately=True):
+        """Replaces only invalid biomes within a multi-biome array, preserving valid ones."""
         container = self.get_container(source)
         if container is not None and 0 <= index < len(container):
             item = container[index]
             if isinstance(item, dict):
-                item["Biome"] = [new_biome]
-                self.save_atomic()
+                current = item.get("Biome", [])
+                if isinstance(current, list):
+                    bad_set = {b.lower() for b in (bad_biomes or [])}
+                    updated = []
+                    replaced = False
+                    for b in current:
+                        if str(b).lower() in bad_set:
+                            if not replaced:
+                                updated.append(new_biome)
+                                replaced = True
+                        else:
+                            updated.append(b)
+                    if not updated:
+                        updated = [new_biome]
+                    item["Biome"] = updated
+                else:
+                    item["Biome"] = [new_biome]
+
+                if save_immediately:
+                    self.save_atomic()
                 return True
         return False
 
-    def replace_target(self, source: str, index: int, new_value: str, is_compound: bool = False):
+    def replace_target(self, source: str, index: int, new_value: str, is_compound: bool = False, save_immediately=True):
         container = self.get_container(source)
         if container is not None and 0 <= index < len(container):
             item = container[index]
@@ -277,19 +308,22 @@ class PlayfieldAST:
                     if "GroupName" in item:
                         item["GroupName"] = new_value
 
-                self.save_atomic()
+                if save_immediately:
+                    self.save_atomic()
                 return True
         return False
 
-    def remove_target(self, source: str, index: int):
+    def remove_target(self, source: str, index: int, save_immediately=True):
         container = self.get_container(source)
         if container is not None and 0 <= index < len(container):
             del container[index]
-            self.save_atomic()
+            if save_immediately:
+                self.save_atomic()
             return True
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
+        """Batch-processes mutations by source container to prevent index corruption and I/O thrashing."""
         self.sanitize_lines()
 
         if not issues:
@@ -297,28 +331,36 @@ class PlayfieldAST:
 
         repaired = 0
         pruned = 0
-        sorted_issues = sorted(issues, key=lambda x: x.get("index", -1), reverse=True)
 
-        for issue in sorted_issues:
-            source = issue.get("source", "Random")
-            idx = issue.get("index", -1)
-            suggestions = issue.get("suggestions", [])
-            itype = issue.get("type")
+        # Group issues by source container to isolate array shift operations
+        grouped = {}
+        for issue in issues:
+            src = issue.get("source", "Random")
+            grouped.setdefault(src, []).append(issue)
 
-            if itype == "invalid_biome":
+        # Mutate in-memory with descending indices within each container
+        for src, src_issues in grouped.items():
+            sorted_src_issues = sorted(src_issues, key=lambda x: x.get("index", -1), reverse=True)
+            for issue in sorted_src_issues:
+                idx = issue.get("index", -1)
+                suggestions = issue.get("suggestions", [])
+                itype = issue.get("type")
+
+                if itype == "invalid_biome":
+                    if suggestions:
+                        if self.correct_biome(src, idx, suggestions[0], issue.get("bad_biomes", []), save_immediately=False):
+                            repaired += 1
+                    continue
+
+                is_compound = (itype == "missing_compound_poi")
                 if suggestions:
-                    self.correct_biome(source, idx, suggestions[0])
-                    repaired += 1
-                continue
+                    chosen = random.choice(suggestions)
+                    if self.replace_target(src, idx, chosen, is_compound, save_immediately=False):
+                        repaired += 1
+                else:
+                    if self.remove_target(src, idx, save_immediately=False):
+                        pruned += 1
 
-            is_compound = (itype == "missing_compound_poi")
-            if suggestions:
-                chosen = random.choice(suggestions)
-                if self.replace_target(source, idx, chosen, is_compound):
-                    repaired += 1
-            else:
-                if self.remove_target(source, idx):
-                    pruned += 1
-
+        # Perform one atomic disk write and backup at the end
         self.save_atomic()
         return {"repaired": repaired, "pruned": pruned}

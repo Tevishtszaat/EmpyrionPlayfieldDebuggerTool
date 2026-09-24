@@ -1,6 +1,7 @@
 ﻿import os
 import sys
 import json
+import shutil
 import asyncio
 import platform
 import subprocess
@@ -11,12 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-# --- Linux File Descriptor Optimization ---
 if platform.system() != "Windows":
     try:
         import resource
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        # Raise soft limit up to hard limit (typically 4096 or 65536)
         resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 65536), hard))
     except Exception:
         pass
@@ -102,7 +101,7 @@ def list_filesystem(req: ListDirRequest):
                 except Exception:
                     pass
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Permission denied or unreadable path: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Permission denied: {str(e)}")
 
     items.sort(key=lambda x: x["name"].lower())
     parent = str(p.parent) if p.parent != p else ""
@@ -111,17 +110,22 @@ def list_filesystem(req: ListDirRequest):
 
 @app.post("/api/open-file")
 def open_local_file(req: OpenFileRequest):
-    p = Path(req.file_path)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"File does not exist: {p}")
+    """Secure editor launcher without shell=True to prevent command injection."""
+    p = Path(req.file_path).resolve()
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Target file does not exist.")
 
     is_win = platform.system() == "Windows"
     choice = req.editor_choice.lower().strip()
     custom = req.custom_editor_cmd.strip()
 
     try:
+        # Validate and sanitize custom executable command
         if choice == "custom" and custom:
-            subprocess.Popen([custom, str(p)])
+            exe_path = shutil.which(custom) or (Path(custom).resolve() if Path(custom).is_file() else None)
+            if not exe_path:
+                raise HTTPException(status_code=400, detail=f"Executable '{custom}' not found on system PATH.")
+            subprocess.Popen([str(exe_path), str(p)])
             return {"status": "ok", "app": custom}
 
         if is_win:
@@ -136,8 +140,10 @@ def open_local_file(req: OpenFileRequest):
                         subprocess.Popen([c, str(p)])
                         return {"status": "ok", "app": "Notepad++"}
             elif choice == "code":
-                subprocess.Popen(["code", str(p)], shell=True)
-                return {"status": "ok", "app": "VS Code"}
+                code_exe = shutil.which("code.cmd") or shutil.which("code")
+                if code_exe:
+                    subprocess.Popen([code_exe, str(p)])
+                    return {"status": "ok", "app": "VS Code"}
             elif choice == "notepad":
                 subprocess.Popen(["notepad.exe", str(p)])
                 return {"status": "ok", "app": "Notepad"}
@@ -145,13 +151,16 @@ def open_local_file(req: OpenFileRequest):
             os.startfile(str(p))
             return {"status": "ok", "app": "System Default"}
         else:
-            # Linux editor triggers
             if choice == "code":
-                subprocess.Popen(["code", str(p)])
-                return {"status": "ok", "app": "VS Code"}
+                code_exe = shutil.which("code")
+                if code_exe:
+                    subprocess.Popen([code_exe, str(p)])
+                    return {"status": "ok", "app": "VS Code"}
             elif choice in ["gedit", "kate", "mousepad", "subl"]:
-                subprocess.Popen([choice, str(p)])
-                return {"status": "ok", "app": choice}
+                exe = shutil.which(choice)
+                if exe:
+                    subprocess.Popen([exe, str(p)])
+                    return {"status": "ok", "app": choice}
 
             subprocess.Popen(["xdg-open", str(p)])
             return {"status": "ok", "app": "xdg-open"}
@@ -185,7 +194,6 @@ def find_all_playfields_fast(root_dir: Path) -> list:
         dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != ".epd_backups"]
         for fname in filenames:
             if fname.lower() in valid_names:
-                # Keep EXACT casing for Linux file systems
                 full_path = Path(dirpath) / fname
                 norm_key = str(full_path.resolve())
                 if norm_key not in seen:
@@ -219,7 +227,6 @@ async def stream_scan(req: ScanMasterRequest):
             halt_error = None
 
             try:
-                # Safe context execution: guarantees file handles close immediately
                 ast = PlayfieldAST(str(f))
                 if ast.duplicate_key_info:
                     dup = ast.duplicate_key_info
@@ -246,7 +253,6 @@ async def stream_scan(req: ScanMasterRequest):
                 elif STATE["indexer"]:
                     file_issues = PlayfieldValidator(ast.data, STATE["indexer"], str(f)).validate()
             except Exception as e:
-                # Catch ANY OS-level or Permission error without aborting the stream
                 halt_error = str(e)[:80]
                 file_issues.append({
                     "id": f"err_{idx}",
@@ -266,7 +272,6 @@ async def stream_scan(req: ScanMasterRequest):
             }
             summary.append(item)
 
-            # Stream progress event with keepalive padding
             yield f"data: {json.dumps({'type': 'progress', 'current': idx + 1, 'total': total, 'file': item})}\n\n"
             await asyncio.sleep(0.002)
 
