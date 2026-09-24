@@ -4,6 +4,7 @@ import json
 import shutil
 import asyncio
 import platform
+import urllib.request
 import subprocess
 import traceback
 from fastapi import FastAPI, HTTPException, Request
@@ -11,6 +12,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
+
+# App Version
+APP_VERSION = "1.2.0"
+GITHUB_REPO = "Particlewave/Empyrion-Playfield-Studio" # Fallback repo check
 
 if platform.system() != "Windows":
     try:
@@ -70,6 +75,76 @@ class ListDirRequest(BaseModel):
     current_path: str = ""
     os_mode: str = "win"
 
+# ==============================================================================
+# GITHUB AUTO-UPDATE & VERSION POLLING API
+# ==============================================================================
+
+@app.get("/api/system/version")
+def check_version():
+    """Checks current local version and polls GitHub remote git HEAD."""
+    update_available = False
+    remote_version = APP_VERSION
+    commit_behind = 0
+
+    try:
+        # Check if running in a git repo
+        if shutil.which("git") and Path(".git").exists():
+            subprocess.run(["git", "fetch"], capture_output=True, timeout=5)
+            status = subprocess.run(["git", "rev-list", "--count", "HEAD..@{u}"], capture_output=True, text=True, timeout=3)
+            if status.returncode == 0:
+                count = int(status.stdout.strip() or 0)
+                if count > 0:
+                    update_available = True
+                    commit_behind = count
+                    remote_version = f"{APP_VERSION} (+{count} updates)"
+    except Exception:
+        pass
+
+    return {
+        "current_version": APP_VERSION,
+        "remote_version": remote_version,
+        "update_available": update_available,
+        "commits_behind": commit_behind
+    }
+
+@app.post("/api/system/self-update")
+def perform_self_update():
+    """Executes git pull, updates pip dependencies, and relaunches the app seamlessly."""
+    try:
+        is_git = shutil.which("git") and Path(".git").exists()
+        if not is_git:
+            raise HTTPException(status_code=400, detail="Not a Git repository. Update via downloading the latest release.")
+
+        # 1. Pull latest code
+        pull = subprocess.run(["git", "pull"], capture_output=True, text=True, timeout=30)
+        if pull.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Git pull failed: {pull.stderr}")
+
+        # 2. Update dependencies
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], capture_output=True, timeout=60)
+
+        # 3. Schedule detached restart
+        script_path = str(Path("main.py").resolve())
+        is_win = platform.system() == "Windows"
+        
+        if is_win:
+            restart_cmd = f'timeout /t 2 /nobreak >nul & "{sys.executable}" "{script_path}"'
+            subprocess.Popen(f'cmd /c "{restart_cmd}"', shell=True)
+        else:
+            restart_cmd = f'sleep 2 && "{sys.executable}" "{script_path}"'
+            subprocess.Popen(["bash", "-c", restart_cmd])
+
+        # Exit current instance after response finishes
+        asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))
+        return {"status": "ok", "message": "Update complete! Relaunching application..."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+# ==============================================================================
+# EXISTING APPLICATION ENDPOINTS
+# ==============================================================================
+
 @app.post("/api/filesystem/list")
 def list_filesystem(req: ListDirRequest):
     is_win = (req.os_mode == "win") or (platform.system() == "Windows")
@@ -110,7 +185,6 @@ def list_filesystem(req: ListDirRequest):
 
 @app.post("/api/open-file")
 def open_local_file(req: OpenFileRequest):
-    """Secure editor launcher without shell=True to prevent command injection."""
     p = Path(req.file_path).resolve()
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Target file does not exist.")
@@ -120,7 +194,6 @@ def open_local_file(req: OpenFileRequest):
     custom = req.custom_editor_cmd.strip()
 
     try:
-        # Validate and sanitize custom executable command
         if choice == "custom" and custom:
             exe_path = shutil.which(custom) or (Path(custom).resolve() if Path(custom).is_file() else None)
             if not exe_path:

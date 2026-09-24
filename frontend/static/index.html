@@ -59,7 +59,7 @@
     <!-- Top Header -->
     <header class="bg-slate-950 p-3.5 border-b border-slate-800 flex justify-between items-center">
       <div class="flex items-center gap-3">
-        <h1 class="text-xl font-bold text-sky-400">Empyrion Playfield Debugger Tool</h1>
+        <h1 class="text-xl font-bold text-sky-400">Empyrion Playfield Studio</h1>
         
         <!-- Win / Linux OS Mode Toggle -->
         <button @click="toggleOS" class="text-xs px-3 py-1 rounded-full font-bold border transition flex items-center gap-1.5"
@@ -90,7 +90,12 @@
           ⚡ Auto-Fill Preset Paths
         </button>
 
-        <!-- Top Header Support Link -->
+        <!-- Dynamic Update Available Button -->
+        <button v-if="updateInfo.update_available" @click="triggerSelfUpdate" :disabled="updating"
+                class="text-[11px] bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold px-3 py-1 rounded-full shadow-lg transition flex items-center gap-1.5 animate-pulse">
+          <span>✨ {{ updating ? 'Updating...' : `Update Available (${updateInfo.commits_behind} commits)` }}</span>
+        </button>
+
         <button @click="showWelcomeModal = true" class="text-[11px] bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white font-bold px-3 py-1 rounded-full shadow transition flex items-center gap-1.5">
           <span>💖 Support Project</span>
         </button>
@@ -224,24 +229,17 @@
       <!-- WELCOME / CONTRIBUTION LANDING MODAL -->
       <div v-if="showWelcomeModal" class="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center z-50">
         <div class="bg-slate-900 border border-sky-800/80 rounded-2xl w-[520px] p-6 shadow-2xl flex flex-col items-center text-center relative">
-          
           <button @click="closeWelcomeModal" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xs">✕</button>
 
-          <div class="w-12 h-12 rounded-full bg-sky-950 border border-sky-700 flex items-center justify-center text-2xl mb-3 shadow">
-            🚀
-          </div>
-
+          <div class="w-12 h-12 rounded-full bg-sky-950 border border-sky-700 flex items-center justify-center text-2xl mb-3 shadow">🚀</div>
           <h2 class="text-lg font-bold text-sky-400 mb-1">Empyrion Playfield Studio</h2>
-          <p class="text-xs text-slate-400 mb-4 max-w-sm">
-            Empowering creators to effortlessly inspect, repair, and optimize galaxy scenarios, biomes, and blueprints.
-          </p>
+          <p class="text-xs text-slate-400 mb-4 max-w-sm">Empowering creators to effortlessly inspect, repair, and optimize galaxy scenarios, biomes, and blueprints.</p>
 
           <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-xs text-slate-300 mb-5 text-left space-y-2">
             <p><strong>Hi Creator!</strong> If this tool saves you hours of manual debugging, prevents planet crashes, or enhances your scenario building, please consider supporting continued development.</p>
             <p class="text-[11px] text-slate-400">Your contributions help maintain updates, add features, and support the community!</p>
           </div>
 
-          <!-- Contribution Action Button -->
           <a href="https://www.paypal.com/ncp/payment/QHPVDW3BM43AW" target="_blank" rel="noopener noreferrer"
              class="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-bold text-xs py-2.5 rounded-xl shadow-lg transition transform hover:-translate-y-0.5 flex items-center justify-center gap-2 mb-3">
             <span>☕ Contribute & Support via PayPal</span>
@@ -252,18 +250,14 @@
               <input type="checkbox" v-model="dontShowWelcomeAgain" class="rounded bg-slate-950 border-slate-700 text-sky-500">
               <span>Don't show this automatically</span>
             </label>
-            <button @click="closeWelcomeModal" class="text-sky-400 hover:underline font-bold">
-              Continue to App →
-            </button>
+            <button @click="closeWelcomeModal" class="text-sky-400 hover:underline font-bold">Continue to App →</button>
           </div>
-
         </div>
       </div>
 
       <!-- VISUAL FILE TREE DIRECTORY PICKER MODAL -->
       <div v-if="showTreeModal" class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50">
         <div class="bg-slate-900 border border-slate-700 rounded-2xl w-[560px] h-[480px] flex flex-col shadow-2xl overflow-hidden">
-          
           <div class="p-3 bg-slate-950 border-b border-slate-800 flex justify-between items-center">
             <div class="text-xs font-bold text-sky-400 flex items-center gap-2">
               <span>📁 Browse Folders</span>
@@ -299,15 +293,12 @@
               <button @click="selectCurrentTreeFolder" class="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded text-xs font-bold">Select This Folder</button>
             </div>
           </div>
-
         </div>
       </div>
 
       <!-- ARCTIC ANIMATION MODAL WITH LIVE COUNTDOWN (DURING BUSY) -->
       <div v-if="busy" class="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center z-50">
-        
         <div class="bg-slate-900/95 border border-sky-800/80 p-6 rounded-3xl shadow-2xl flex flex-col items-center w-[540px]">
-          
           <h3 class="text-sm font-bold text-sky-300 mb-1 flex items-center gap-2">
             <span>{{ operationTitle }}</span>
           </h3>
@@ -447,7 +438,9 @@
           treeTargetKey: "",
           treeData: { current_path: "", parent_path: "", items: [] },
           showWelcomeModal: false,
-          dontShowWelcomeAgain: false
+          dontShowWelcomeAgain: false,
+          updateInfo: { update_available: false, commits_behind: 0 },
+          updating: false
         };
       },
       mounted() {
@@ -455,6 +448,7 @@
         if (!hideNotice) {
           this.showWelcomeModal = true;
         }
+        this.checkAppVersion();
       },
       computed: {
         activeFileName() {
@@ -487,6 +481,30 @@
         }
       },
       methods: {
+        async checkAppVersion() {
+          try {
+            const res = await fetch('/api/system/version');
+            if (res.ok) {
+              this.updateInfo = await res.json();
+            }
+          } catch (e) {}
+        },
+        async triggerSelfUpdate() {
+          if (!confirm("Download latest updates and restart Empyrion Playfield Studio?")) return;
+          this.updating = true;
+          try {
+            const res = await fetch('/api/system/self-update', { method: 'POST' });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "Update failed.");
+            }
+            alert("Update downloaded successfully! The application will restart in a moment. Refresh your browser in 5 seconds.");
+          } catch (e) {
+            alert("Auto-update failed: " + e.message);
+          } finally {
+            this.updating = false;
+          }
+        },
         closeWelcomeModal() {
           if (this.dontShowWelcomeAgain) {
             localStorage.setItem("epd_hide_welcome", "true");
