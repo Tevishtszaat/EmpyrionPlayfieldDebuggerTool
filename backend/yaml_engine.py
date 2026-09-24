@@ -12,16 +12,14 @@ yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
 yaml.width = 100000
 
-# Reserved YAML keywords in Empyrion playfields (Items like 'Electronics:20' are NOT in this set)
 RESERVED_YAML_KEYS = {
-    "key", "value", "groupname", "prefab", "name", "model", "type", "faction",
+    "key", "value", "groupname", "prefab", "name", "names", "model", "type", "faction",
     "pos", "rot", "initresource", "biom", "biome", "delayminmax", "delaybetweenspawns",
     "parent", "properties", "random", "fixed", "objects", "dronespawns", "structures",
     "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity"
 }
 
 def is_true_yaml_key(line: str) -> bool:
-    """Checks if an indented line is a genuine YAML structural key, rather than an item like 'Electronics:20'."""
     stripped = line.strip()
     if stripped.startswith("-"):
         return True
@@ -64,7 +62,7 @@ def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
     return "".join(new_lines), has_tabs
 
 def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
-    """Guarantees Description, Biome, and Value statements stay on ONE SINGLE LINE."""
+    """Universal flattener: Guarantees ANY bracketed [ ... ], Description, or Value stays on ONE line."""
     if not file_path.exists():
         return False
 
@@ -139,11 +137,11 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 2. Biome: [ ... ]
-            biome_match = re.match(r'^([ \t]*Biome:[ \t]*\[)(.*)$', line)
-            if biome_match and not line.rstrip().endswith("]"):
-                prefix = biome_match.group(1)
-                first_val = biome_match.group(2).rstrip('\r\n')
+            # 2. UNIVERSAL BRACKET FLATTENER: Matches ANY key opening a bracket '[' (Names:, Biome:, Pos:, etc.)
+            flow_match = re.match(r'^([ \t]*[A-Za-z0-9_-]+:[ \t]*\[)(.*)$', line)
+            if flow_match and "]" not in flow_match.group(2):
+                prefix = flow_match.group(1)
+                first_val = flow_match.group(2).rstrip('\r\n')
                 parts = [first_val.strip()] if first_val.strip() else []
 
                 j = i + 1
@@ -161,15 +159,16 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                             parts.append(stripped)
                     j += 1
 
-                combined_biomes = " ".join(parts)
-                tokens = [t.strip().strip(',').strip() for t in combined_biomes.split(',') if t.strip()]
-                clean_biome_str = ", ".join(tokens)
-                new_lines.append(f'{prefix}{clean_biome_str}]\n')
+                # Clean up commas and spaces inside [item1, item2, item3]
+                combined_items = " ".join(parts)
+                tokens = [t.strip().strip(',').strip() for t in combined_items.split(',') if t.strip()]
+                clean_flow_str = ", ".join(tokens)
+                new_lines.append(f'{prefix}{clean_flow_str}]\n')
                 modified = True
                 i = j
                 continue
 
-            # 3. Value: ... (Container loot items like 'Pistol, 50Caliber:80, Electronics:20...')
+            # 3. Value: ... (Container loot items)
             value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
             if value_match:
                 prefix = value_match.group(1)
@@ -181,11 +180,9 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
 
                 while j < n:
                     next_line = lines[j]
-                    # Stop ONLY if it's a real structural YAML key (e.g., - Key:, Pos:, Rot:)
                     if is_true_yaml_key(next_line):
                         break
 
-                    # If it's an indented continuation of items (even if it contains colons like Electronics:20)
                     if next_line.startswith(" ") or next_line.startswith("\t"):
                         stripped = next_line.strip().strip(' "\'')
                         if stripped:
@@ -199,7 +196,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                     combined_val = " ".join(parts)
                     combined_val = re.sub(r'[ \t]*,[ \t]*', ', ', combined_val)
                     combined_val = re.sub(r'[ \t]+', ' ', combined_val).strip()
-                    # Enclose in quotes to guarantee item colons (Item:Count) never break YAML parsers
                     new_lines.append(f'{prefix} "{combined_val}"\n')
                     modified = True
                     i = j
