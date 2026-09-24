@@ -10,6 +10,148 @@ from ruamel.yaml.constructor import DuplicateKeyError
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
+# Prevent ruamel.yaml from wrapping ANY long flow sequences or plain strings
+yaml.width = 100000
+
+def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
+    """Guarantees Description, Biome, and Value statements stay on ONE SINGLE LINE."""
+    if not file_path.exists():
+        return False
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        modified = False
+        new_lines = []
+        i = 0
+        n = len(lines)
+
+        while i < n:
+            line = lines[i]
+
+            # 1. Check Description: ...
+            desc_match = re.match(r'^([ \t]*Description:)\s*(.*)$', line)
+            if desc_match:
+                prefix = desc_match.group(1)
+                first_val = desc_match.group(2).rstrip('\r\n')
+                starts_quote = first_val.startswith('"') or first_val.startswith("'")
+                qchar = first_val[0] if starts_quote else None
+
+                if starts_quote and len(first_val) > 1 and first_val.endswith(qchar) and not first_val.endswith('\\' + qchar):
+                    new_lines.append(line)
+                    i += 1
+                    continue
+
+                parts = [first_val.lstrip('"\'').rstrip('"\'')] if first_val else []
+                j = i + 1
+                while j < n:
+                    next_line = lines[j]
+                    if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) and not next_line.strip().startswith("-"):
+                        break
+                    stripped = next_line.strip()
+                    if starts_quote and qchar in stripped:
+                        p = stripped.split(qchar)[0].strip()
+                        if p:
+                            parts.append(p)
+                        j += 1
+                        break
+                    else:
+                        if stripped:
+                            parts.append(stripped)
+                    j += 1
+
+                merged = " ".join([p for p in parts if p])
+                merged = re.sub(r'[ \t]+', ' ', merged).strip().replace('"', '\\"')
+                new_lines.append(f'{prefix} "{merged}"\n')
+                modified = True
+                i = j
+                continue
+
+            # 2. Check Biome: [ ... ] multi-line wrap
+            biome_match = re.match(r'^([ \t]*Biome:[ \t]*\[)(.*)$', line)
+            if biome_match and not line.rstrip().endswith("]"):
+                prefix = biome_match.group(1)
+                first_val = biome_match.group(2).rstrip('\r\n')
+                parts = [first_val.strip()] if first_val.strip() else []
+
+                j = i + 1
+                while j < n:
+                    next_line = lines[j]
+                    stripped = next_line.strip()
+                    if "]" in stripped:
+                        before_bracket = stripped.split("]")[0].strip()
+                        if before_bracket:
+                            parts.append(before_bracket)
+                        j += 1
+                        break
+                    else:
+                        if stripped:
+                            parts.append(stripped)
+                    j += 1
+
+                # Clean up commas and spaces inside [Biome1, Biome2, ...]
+                combined_biomes = " ".join(parts)
+                # Ensure clean comma spacing: "Biome1, Biome2"
+                tokens = [t.strip().strip(',').strip() for t in combined_biomes.split(',') if t.strip()]
+                clean_biome_str = ", ".join(tokens)
+                new_lines.append(f'{prefix}{clean_biome_str}]\n')
+                modified = True
+                i = j
+                continue
+
+            # 3. Check Value: ... multi-line wrap (Container items, MapMarker, etc.)
+            value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
+            if value_match:
+                prefix = value_match.group(1)
+                first_val = value_match.group(2).rstrip('\r\n')
+
+                # Check if the next line is an indented continuation (starts with spaces and no new key)
+                j = i + 1
+                is_wrapped = False
+                parts = [first_val.strip()] if first_val.strip() else []
+
+                while j < n:
+                    next_line = lines[j]
+                    # Stop if it's a new YAML key or list bullet
+                    if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) or next_line.strip().startswith("-"):
+                        break
+                    # If it's indented continuation text (e.g. '    Electronics:20, WheatStage1:9...')
+                    if next_line.startswith(" ") or next_line.startswith("\t"):
+                        stripped = next_line.strip()
+                        if stripped:
+                            parts.append(stripped)
+                            is_wrapped = True
+                        j += 1
+                    else:
+                        break
+
+                if is_wrapped:
+                    combined_val = " ".join(parts)
+                    # Clean up multiple spaces around commas
+                    combined_val = re.sub(r'[ \t]*,[ \t]*', ', ', combined_val)
+                    combined_val = re.sub(r'[ \t]+', ' ', combined_val).strip()
+                    new_lines.append(f'{prefix} {combined_val}\n')
+                    modified = True
+                    i = j
+                    continue
+                else:
+                    new_lines.append(line)
+                    i += 1
+                    continue
+
+            new_lines.append(line)
+            i += 1
+
+        if modified:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            return True
+    except Exception:
+        pass
+    return False
 
 class PlayfieldAST:
     def __init__(self, file_path: str):
@@ -17,108 +159,14 @@ class PlayfieldAST:
         self.data = None
         self.parse_error = None
         self.duplicate_key_info = None
-        self.description_fixed = False
-        # 1. Sanitize all Description formats (quoted or unquoted multi-line) into single "..." line
-        self.sanitize_description_block()
-        # 2. Load AST
+        
+        # 1. Enforce strict single lines for Description, Biome, and Value before parsing
+        self.sanitize_lines()
+        # 2. Parse YAML
         self.load()
 
-    def sanitize_description_block(self) -> bool:
-        """Finds ANY multi-line Description (quoted or unquoted with indentation) and collapses it into a single line wrapped in double quotes."""
-        if not self.path.exists():
-            return False
-
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            modified = False
-            new_lines = []
-            i = 0
-            n = len(lines)
-
-            while i < n:
-                line = lines[i]
-                # Match start of a Description line (e.g., 'Description:' or '  Description:')
-                match = re.match(r'^([ \t]*Description:)\s*(.*)$', line)
-                if match:
-                    prefix = match.group(1) # 'Description:'
-                    first_val = match.group(2).rstrip('\r\n')
-
-                    desc_parts = []
-                    # Check if it starts with an open quote
-                    starts_with_quote = first_val.startswith('"') or first_val.startswith("'")
-                    quote_char = first_val[0] if starts_with_quote else None
-
-                    # If it starts with quote and also closes on the same line (and not empty)
-                    if starts_with_quote and len(first_val) > 1 and first_val.endswith(quote_char) and not first_val.endswith('\\' + quote_char):
-                        # Already on a single quoted line! Clean up if needed
-                        new_lines.append(line)
-                        i += 1
-                        continue
-
-                    # Multi-line detected (either unquoted indented, or unclosed quote spanning multiple lines)
-                    if starts_with_quote:
-                        desc_parts.append(first_val[1:].rstrip(quote_char))
-                    elif first_val:
-                        desc_parts.append(first_val)
-
-                    # Gather continuation lines
-                    j = i + 1
-                    while j < n:
-                        next_line = lines[j]
-                        # Stop if we hit another top-level or sibling YAML key (e.g., 'PlanetType:', 'Gravity:', 'POIs:')
-                        if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) and not next_line.strip().startswith("-"):
-                            break
-                        # Stop if unquoted line is completely unindented
-                        if not starts_with_quote and next_line.strip() and not next_line.startswith(" ") and not next_line.startswith("\t"):
-                            break
-
-                        stripped = next_line.strip()
-                        if starts_with_quote and quote_char in stripped:
-                            # Reached the closing quote
-                            part = stripped.split(quote_char)[0].strip()
-                            if part:
-                                desc_parts.append(part)
-                            j += 1
-                            break
-                        else:
-                            if stripped:
-                                # Clean up leading literal \n or stray hyphens
-                                if stripped.startswith('\\n'):
-                                    stripped = stripped[2:].strip()
-                                desc_parts.append(stripped)
-                        j += 1
-
-                    # Combine all sentence parts cleanly into ONE single line
-                    # Join with single space, preserving punctuation and literal \n where intended
-                    full_text = " ".join([p for p in desc_parts if p])
-                    # Clean double spaces
-                    full_text = re.sub(r'[ \t]+', ' ', full_text).strip()
-                    # Escape internal double quotes so it's strictly valid YAML
-                    clean_inner = full_text.replace('"', '\\"')
-
-                    # Produce guaranteed single line enclosed in double quotes: Description: "..."
-                    sanitized_line = f'{prefix} "{clean_inner}"\n'
-                    new_lines.append(sanitized_line)
-                    modified = True
-                    self.description_fixed = True
-                    i = j
-                    continue
-                else:
-                    new_lines.append(line)
-                    i += 1
-
-            if modified:
-                self.backup()
-                with open(self.path, "w", encoding="utf-8") as f:
-                    f.writelines(new_lines)
-                    f.flush()
-                    os.fsync(f.fileno())
-                return True
-        except Exception:
-            pass
-        return False
+    def sanitize_lines(self) -> bool:
+        return enforce_strict_single_lines_on_disk(self.path)
 
     def load(self):
         self.parse_error = None
@@ -154,6 +202,9 @@ class PlayfieldAST:
             yaml.dump(self.data, f)
             f.flush()
             os.fsync(f.fileno())
+
+        # Post-dump safety sweep: Guarantees ruamel didn't wrap Biome, Value, or Description
+        enforce_strict_single_lines_on_disk(self.path)
 
     def remove_duplicate_key_line(self, line_number: int, key_name: str) -> bool:
         if not self.path.exists() or line_number <= 0:
@@ -239,7 +290,7 @@ class PlayfieldAST:
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
-        self.sanitize_description_block()
+        self.sanitize_lines()
 
         if not issues:
             return {"repaired": 0, "pruned": 0}
