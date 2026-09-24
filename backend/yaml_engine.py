@@ -12,11 +12,18 @@ yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
 yaml.width = 100000
 
+# Strict allow-list of properties that the C# class 'PoiData+RandomPoiData' actually possesses
+RANDOM_POI_VALID_KEYS = {
+    "groupname", "countminmax", "droneprob", "dronesmax", "reservecount",
+    "spawnpoiavoid", "spawnresource", "properties", "resourcedistance",
+    "biome", "faction", "level", "delayminmax", "delaybetweenspawns", "compoundpoi"
+}
+
 RESERVED_YAML_KEYS = {
     "key", "value", "groupname", "prefab", "name", "names", "model", "type", "faction",
     "pos", "rot", "initresource", "biom", "biome", "delayminmax", "delaybetweenspawns",
     "parent", "properties", "random", "fixed", "objects", "dronespawns", "structures",
-    "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity", "mode"
+    "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity", "mode", "status"
 }
 
 def is_true_yaml_key(line: str) -> bool:
@@ -262,15 +269,14 @@ class PlayfieldAST:
         self.detab_content()
         self.sanitize_lines()
         self.load()
-        # Clean both illegal 'Prefab' AND illegal 'Mode' from RandomPoiData
+        # Strictly sanitize RandomPoiData against the C# class allow-list
         self.sanitize_random_poi_keys()
 
     def sanitize_random_poi_keys(self) -> bool:
         """
-        Empyrion C# Engine Rules:
-        - RandomPoiData does NOT have a 'Prefab' property (must use GroupName).
-        - RandomPoiData does NOT have a 'Mode' property (only valid in FixedPoiData).
-        - RandomPoiData does NOT have 'Pos' or 'Rot' properties.
+        Enforces C# Engine Schema for RandomPoiData.
+        Prunes ALL foreign properties (Status, Mode, CanBeZero, InitResource, Pos, Rot, Prefab)
+        that cause YamlDotNet deserialization exceptions.
         """
         if not self.data or not isinstance(self.data, dict):
             return False
@@ -286,25 +292,21 @@ class PlayfieldAST:
         modified = False
         for item in random_list:
             if isinstance(item, dict):
-                # 1. Illegal Prefab in Random
+                # If Prefab exists and no GroupName, copy it over
                 if "Prefab" in item:
                     if "GroupName" not in item or not item["GroupName"]:
                         item["GroupName"] = item["Prefab"]
                     del item["Prefab"]
                     modified = True
 
-                # 2. Illegal Mode in Random (causes SerializationException: Property 'Mode' not found)
-                if "Mode" in item:
-                    del item["Mode"]
-                    modified = True
-
-                # 3. Illegal Pos/Rot in Random
-                if "Pos" in item:
-                    del item["Pos"]
-                    modified = True
-                if "Rot" in item:
-                    del item["Rot"]
-                    modified = True
+                # Inspect all keys in this Random POI block
+                current_keys = list(item.keys())
+                for k in current_keys:
+                    k_lower = str(k).lower().strip()
+                    # If this key is NOT in the official C# RandomPoiData allow-list, prune it!
+                    if k_lower not in RANDOM_POI_VALID_KEYS:
+                        del item[k]
+                        modified = True
 
         if modified:
             self.save_atomic()
@@ -469,10 +471,10 @@ class PlayfieldAST:
                 else:
                     if source == "Random":
                         item["GroupName"] = new_value
-                        if "Prefab" in item:
-                            del item["Prefab"]
-                        if "Mode" in item:
-                            del item["Mode"]
+                        # Auto-clean any illegal non-Random properties on this item
+                        for illegal_key in list(item.keys()):
+                            if illegal_key.lower().strip() not in RANDOM_POI_VALID_KEYS:
+                                del item[illegal_key]
                     else:
                         item["Prefab"] = new_value
                         if "GroupName" in item:
