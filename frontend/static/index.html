@@ -89,6 +89,11 @@
         <button @click="autoFillPaths" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-2.5 py-1 rounded">
           ⚡ Auto-Fill Preset Paths
         </button>
+
+        <!-- Top Header Support Link -->
+        <button @click="showWelcomeModal = true" class="text-[11px] bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white font-bold px-3 py-1 rounded-full shadow transition flex items-center gap-1.5">
+          <span>💖 Support Project</span>
+        </button>
       </div>
       
       <div class="flex gap-2">
@@ -215,6 +220,45 @@
           </div>
         </div>
       </main>
+
+      <!-- WELCOME / CONTRIBUTION LANDING MODAL -->
+      <div v-if="showWelcomeModal" class="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center z-50">
+        <div class="bg-slate-900 border border-sky-800/80 rounded-2xl w-[520px] p-6 shadow-2xl flex flex-col items-center text-center relative">
+          
+          <button @click="closeWelcomeModal" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xs">✕</button>
+
+          <div class="w-12 h-12 rounded-full bg-sky-950 border border-sky-700 flex items-center justify-center text-2xl mb-3 shadow">
+            🚀
+          </div>
+
+          <h2 class="text-lg font-bold text-sky-400 mb-1">Empyrion Playfield Studio</h2>
+          <p class="text-xs text-slate-400 mb-4 max-w-sm">
+            Empowering creators to effortlessly inspect, repair, and optimize galaxy scenarios, biomes, and blueprints.
+          </p>
+
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-xs text-slate-300 mb-5 text-left space-y-2">
+            <p><strong>Hi Creator!</strong> If this tool saves you hours of manual debugging, prevents planet crashes, or enhances your scenario building, please consider supporting continued development.</p>
+            <p class="text-[11px] text-slate-400">Your contributions help maintain updates, add features, and support the community!</p>
+          </div>
+
+          <!-- Contribution Action Button -->
+          <a href="https://www.paypal.com/ncp/payment/QHPVDW3BM43AW" target="_blank" rel="noopener noreferrer"
+             class="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-bold text-xs py-2.5 rounded-xl shadow-lg transition transform hover:-translate-y-0.5 flex items-center justify-center gap-2 mb-3">
+            <span>☕ Contribute & Support via PayPal</span>
+          </a>
+
+          <div class="flex items-center justify-between w-full pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" v-model="dontShowWelcomeAgain" class="rounded bg-slate-950 border-slate-700 text-sky-500">
+              <span>Don't show this automatically</span>
+            </label>
+            <button @click="closeWelcomeModal" class="text-sky-400 hover:underline font-bold">
+              Continue to App →
+            </button>
+          </div>
+
+        </div>
+      </div>
 
       <!-- VISUAL FILE TREE DIRECTORY PICKER MODAL -->
       <div v-if="showTreeModal" class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50">
@@ -401,8 +445,16 @@
           scanStatus: { current: 0, total: 0, remaining: 0, currentName: "" },
           showTreeModal: false,
           treeTargetKey: "",
-          treeData: { current_path: "", parent_path: "", items: [] }
+          treeData: { current_path: "", parent_path: "", items: [] },
+          showWelcomeModal: false,
+          dontShowWelcomeAgain: false
         };
+      },
+      mounted() {
+        const hideNotice = localStorage.getItem("epd_hide_welcome");
+        if (!hideNotice) {
+          this.showWelcomeModal = true;
+        }
       },
       computed: {
         activeFileName() {
@@ -435,6 +487,12 @@
         }
       },
       methods: {
+        closeWelcomeModal() {
+          if (this.dontShowWelcomeAgain) {
+            localStorage.setItem("epd_hide_welcome", "true");
+          }
+          this.showWelcomeModal = false;
+        },
         toggleOS() {
           this.osMode = (this.osMode === "win") ? "lin" : "win";
           const fromSep = (this.osMode === "win") ? "/" : "\\\\";
