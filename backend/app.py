@@ -4,7 +4,6 @@ import json
 import shutil
 import asyncio
 import platform
-import urllib.request
 import subprocess
 import traceback
 from fastapi import FastAPI, HTTPException, Request
@@ -13,9 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-# App Version
-APP_VERSION = "1.2.0"
-GITHUB_REPO = "Particlewave/Empyrion-Playfield-Studio" # Fallback repo check
+APP_VERSION = "1.2.1"
 
 if platform.system() != "Windows":
     try:
@@ -75,19 +72,12 @@ class ListDirRequest(BaseModel):
     current_path: str = ""
     os_mode: str = "win"
 
-# ==============================================================================
-# GITHUB AUTO-UPDATE & VERSION POLLING API
-# ==============================================================================
-
 @app.get("/api/system/version")
 def check_version():
-    """Checks current local version and polls GitHub remote git HEAD."""
     update_available = False
     remote_version = APP_VERSION
     commit_behind = 0
-
     try:
-        # Check if running in a git repo
         if shutil.which("git") and Path(".git").exists():
             subprocess.run(["git", "fetch"], capture_output=True, timeout=5)
             status = subprocess.run(["git", "rev-list", "--count", "HEAD..@{u}"], capture_output=True, text=True, timeout=3)
@@ -99,7 +89,6 @@ def check_version():
                     remote_version = f"{APP_VERSION} (+{count} updates)"
     except Exception:
         pass
-
     return {
         "current_version": APP_VERSION,
         "remote_version": remote_version,
@@ -109,21 +98,17 @@ def check_version():
 
 @app.post("/api/system/self-update")
 def perform_self_update():
-    """Executes git pull, updates pip dependencies, and relaunches the app seamlessly."""
     try:
         is_git = shutil.which("git") and Path(".git").exists()
         if not is_git:
-            raise HTTPException(status_code=400, detail="Not a Git repository. Update via downloading the latest release.")
+            raise HTTPException(status_code=400, detail="Not a Git repository.")
 
-        # 1. Pull latest code
         pull = subprocess.run(["git", "pull"], capture_output=True, text=True, timeout=30)
         if pull.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Git pull failed: {pull.stderr}")
 
-        # 2. Update dependencies
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], capture_output=True, timeout=60)
 
-        # 3. Schedule detached restart
         script_path = str(Path("main.py").resolve())
         is_win = platform.system() == "Windows"
         
@@ -134,16 +119,10 @@ def perform_self_update():
             restart_cmd = f'sleep 2 && "{sys.executable}" "{script_path}"'
             subprocess.Popen(["bash", "-c", restart_cmd])
 
-        # Exit current instance after response finishes
         asyncio.get_event_loop().call_later(1.0, lambda: os._exit(0))
-        return {"status": "ok", "message": "Update complete! Relaunching application..."}
-
+        return {"status": "ok", "message": "Update complete! Relaunching..."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
-
-# ==============================================================================
-# EXISTING APPLICATION ENDPOINTS
-# ==============================================================================
 
 @app.post("/api/filesystem/list")
 def list_filesystem(req: ListDirRequest):
@@ -197,7 +176,7 @@ def open_local_file(req: OpenFileRequest):
         if choice == "custom" and custom:
             exe_path = shutil.which(custom) or (Path(custom).resolve() if Path(custom).is_file() else None)
             if not exe_path:
-                raise HTTPException(status_code=400, detail=f"Executable '{custom}' not found on system PATH.")
+                raise HTTPException(status_code=400, detail=f"Executable '{custom}' not found.")
             subprocess.Popen([str(exe_path), str(p)])
             return {"status": "ok", "app": custom}
 
@@ -250,12 +229,26 @@ def open_local_file(req: OpenFileRequest):
 @app.post("/api/fix-duplicate-key")
 def fix_duplicate_key(req: FixDuplicateKeyRequest):
     if STATE["ast"]:
-        success = STATE["ast"].remove_duplicate_key_line(req.line, req.key)
-        if success:
-            issues = []
-            if not STATE["ast"].parse_error and STATE["indexer"]:
-                issues = PlayfieldValidator(STATE["ast"].data, STATE["indexer"], STATE["active_file"]).validate()
-            return {"status": "ok", "issues": issues}
+        # Fix this specific line, and auto-loop if more duplicates exist in the same file
+        STATE["ast"].remove_duplicate_key_line(req.line, req.key)
+        STATE["ast"].auto_resolve_all_duplicate_keys()
+        
+        issues = []
+        if not STATE["ast"].parse_error and STATE["indexer"]:
+            issues = PlayfieldValidator(STATE["ast"].data, STATE["indexer"], STATE["active_file"]).validate()
+        elif STATE["ast"].duplicate_key_info:
+            dup = STATE["ast"].duplicate_key_info
+            issues.append({
+                "id": f"dup_{dup['line']}",
+                "type": "duplicate_key",
+                "severity": "FATAL",
+                "message": f"Duplicate key '{dup['key']}' on line {dup['line']}.",
+                "current_value": f"Key: {dup['key']} (Line {dup['line']})",
+                "line": dup['line'],
+                "key_name": dup['key'],
+                "suggestions": []
+            })
+        return {"status": "ok", "issues": issues}
     raise HTTPException(status_code=400, detail="Could not auto-remove duplicate line.")
 
 def find_all_playfields_fast(root_dir: Path) -> list:
@@ -378,11 +371,12 @@ async def stream_master_complete():
             remaining = total_files - (idx + 1)
             try:
                 ast = PlayfieldAST(item["path"])
-                if ast.duplicate_key_info:
-                    dup = ast.duplicate_key_info
-                    ast.remove_duplicate_key_line(dup["line"], dup["key"])
+                # Looping deduplicator: resolves ALL duplicate keys in file
+                dups_fixed = ast.auto_resolve_all_duplicate_keys()
+                if dups_fixed > 0:
                     repaired_count += 1
-                elif not ast.parse_error:
+
+                if not ast.parse_error:
                     issues = PlayfieldValidator(ast.data, STATE["indexer"], item["path"]).validate()
                     if issues:
                         ast.autocomplete_all_issues(issues, STATE["indexer"])

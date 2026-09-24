@@ -262,11 +262,9 @@ class PlayfieldAST:
         self.detab_content()
         self.sanitize_lines()
         self.load()
-        # Clean any illegal Prefab keys inside POIs: Random
         self.sanitize_random_poi_keys()
 
     def sanitize_random_poi_keys(self) -> bool:
-        """Empyrion engine rule: RandomPoiData does NOT have a 'Prefab' property. Convert to GroupName."""
         if not self.data or not isinstance(self.data, dict):
             return False
 
@@ -281,10 +279,8 @@ class PlayfieldAST:
         modified = False
         for item in random_list:
             if isinstance(item, dict) and "Prefab" in item:
-                # If no GroupName, copy Prefab to GroupName
                 if "GroupName" not in item or not item["GroupName"]:
                     item["GroupName"] = item["Prefab"]
-                # Delete illegal Prefab key
                 del item["Prefab"]
                 modified = True
 
@@ -353,6 +349,7 @@ class PlayfieldAST:
         enforce_strict_single_lines_on_disk(self.path)
 
     def remove_duplicate_key_line(self, line_number: int, key_name: str) -> bool:
+        """Comments out the duplicate key line and reloads to check if more duplicates exist."""
         if not self.path.exists() or line_number <= 0:
             return False
 
@@ -383,6 +380,19 @@ class PlayfieldAST:
             return True
 
         return False
+
+    def auto_resolve_all_duplicate_keys(self) -> int:
+        """Looping deduplicator: continuously resolves duplicate keys until file loads cleanly."""
+        resolved = 0
+        max_passes = 25
+        while self.duplicate_key_info and max_passes > 0:
+            dup = self.duplicate_key_info
+            if self.remove_duplicate_key_line(dup["line"], dup["key"]):
+                resolved += 1
+            else:
+                break
+            max_passes -= 1
+        return resolved
 
     def get_container(self, source: str):
         if not self.data or not isinstance(self.data, dict):
@@ -437,7 +447,6 @@ class PlayfieldAST:
                     if "GroupName" in item:
                         item["GroupName"] = new_value
                 else:
-                    # Empyrion C# Rule: Random POIs MUST use GroupName, NEVER Prefab
                     if source == "Random":
                         item["GroupName"] = new_value
                         if "Prefab" in item:
@@ -462,6 +471,9 @@ class PlayfieldAST:
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
+        # 1. First loop-resolve any duplicate keys until completely clear
+        self.auto_resolve_all_duplicate_keys()
+        
         clean_empty_null_yaml_keys(self.path)
         self.detab_content()
         self.sanitize_lines()

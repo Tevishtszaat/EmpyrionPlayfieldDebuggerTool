@@ -61,14 +61,12 @@
       <div class="flex items-center gap-3">
         <h1 class="text-xl font-bold text-sky-400">Empyrion Playfield Studio</h1>
         
-        <!-- Win / Linux OS Mode Toggle -->
         <button @click="toggleOS" class="text-xs px-3 py-1 rounded-full font-bold border transition flex items-center gap-1.5"
                 :class="osMode === 'win' ? 'bg-sky-950 text-sky-300 border-sky-700' : 'bg-emerald-950 text-emerald-300 border-emerald-700'">
           <span>{{ osMode === 'win' ? '🪟 Windows (\\)' : '🐧 Linux (/)' }}</span>
           <span class="text-[10px] text-slate-400 underline">Switch</span>
         </button>
 
-        <!-- Editor Preferences Dropdown -->
         <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700 px-2.5 py-1 rounded-lg text-xs">
           <label class="text-slate-400 font-semibold">Editor:</label>
           <select v-model="editorChoice" class="bg-slate-950 text-sky-300 rounded p-1 border border-slate-800 text-[11px] font-mono">
@@ -90,7 +88,6 @@
           ⚡ Auto-Fill Preset Paths
         </button>
 
-        <!-- Dynamic Update Available Button -->
         <button v-if="updateInfo.update_available" @click="triggerSelfUpdate" :disabled="updating"
                 class="text-[11px] bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold px-3 py-1 rounded-full shadow-lg transition flex items-center gap-1.5 animate-pulse">
           <span>✨ {{ updating ? 'Updating...' : `Update Available (${updateInfo.commits_behind} commits)` }}</span>
@@ -111,14 +108,12 @@
       </div>
     </header>
 
-    <!-- 4 Directory Selectors with "Browse Tree" Button -->
+    <!-- 4 Directory Selectors -->
     <div class="bg-slate-950/70 p-3 border-b border-slate-800 grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
       <div>
         <div class="flex justify-between items-center mb-1">
           <label class="text-sky-400 font-bold">1. Scenario Playfields</label>
-          <button @click="openTreeModal('scenario_playfields')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 px-1.5 py-0.5 rounded">
-            📁 Tree
-          </button>
+          <button @click="openTreeModal('scenario_playfields')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 px-1.5 py-0.5 rounded">📁 Tree</button>
         </div>
         <input v-model="paths.scenario_playfields" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
@@ -126,9 +121,7 @@
       <div>
         <div class="flex justify-between items-center mb-1">
           <label class="text-emerald-400 font-bold">2. Scenario Prefabs</label>
-          <button @click="openTreeModal('scenario_prefabs')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 px-1.5 py-0.5 rounded">
-            📁 Tree
-          </button>
+          <button @click="openTreeModal('scenario_prefabs')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 px-1.5 py-0.5 rounded">📁 Tree</button>
         </div>
         <input v-model="paths.scenario_prefabs" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
@@ -136,9 +129,7 @@
       <div>
         <div class="flex justify-between items-center mb-1">
           <label class="text-amber-400 font-bold">3. Main Game Playfields</label>
-          <button @click="openTreeModal('game_playfields')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 px-1.5 py-0.5 rounded">
-            📁 Tree
-          </button>
+          <button @click="openTreeModal('game_playfields')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 px-1.5 py-0.5 rounded">📁 Tree</button>
         </div>
         <input v-model="paths.game_playfields" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
@@ -146,9 +137,7 @@
       <div>
         <div class="flex justify-between items-center mb-1">
           <label class="text-purple-400 font-bold">4. Main Game Prefabs</label>
-          <button @click="openTreeModal('game_prefabs')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-purple-300 border border-slate-700 px-1.5 py-0.5 rounded">
-            📁 Tree
-          </button>
+          <button @click="openTreeModal('game_prefabs')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-purple-300 border border-slate-700 px-1.5 py-0.5 rounded">📁 Tree</button>
         </div>
         <input v-model="paths.game_prefabs" class="w-full bg-slate-900 border border-slate-700 p-1.5 rounded text-[11px] text-slate-200">
       </div>
@@ -210,7 +199,18 @@
             <div class="text-[11px] text-slate-300 mt-1">Current: <code class="text-rose-300 bg-slate-950 px-1 py-0.5 rounded">{{ issue.current_value }}</code></div>
           </div>
 
-          <div class="flex items-center gap-2">
+          <!-- ACTIONS: Specific to Duplicate Key Error -->
+          <div v-if="issue.type === 'duplicate_key'" class="flex items-center gap-2">
+            <button @click="openLocalFile(activeFile)" class="bg-slate-900 hover:bg-slate-700 text-slate-300 border border-slate-700 p-1.5 rounded text-xs">
+              📄 Line {{ issue.line }}
+            </button>
+            <button @click="removeDuplicateKey(issue.line, issue.key_name)" class="bg-rose-600 hover:bg-rose-500 text-white px-3 py-1.5 rounded text-xs font-bold transition shadow">
+              🔧 Remove Duplicate '{{ issue.key_name }}'
+            </button>
+          </div>
+
+          <!-- ACTIONS: Standard POI / Compound / Biome Errors -->
+          <div v-else class="flex items-center gap-2">
             <button @click="openLocalFile(activeFile)" class="bg-slate-900 hover:bg-slate-700 text-slate-300 border border-slate-700 p-1.5 rounded text-xs">
               📄 Line {{ issue.line || '' }}
             </button>
@@ -226,7 +226,7 @@
         </div>
       </main>
 
-      <!-- WELCOME / CONTRIBUTION LANDING MODAL -->
+      <!-- WELCOME MODAL -->
       <div v-if="showWelcomeModal" class="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center z-50">
         <div class="bg-slate-900 border border-sky-800/80 rounded-2xl w-[520px] p-6 shadow-2xl flex flex-col items-center text-center relative">
           <button @click="closeWelcomeModal" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xs">✕</button>
@@ -255,7 +255,7 @@
         </div>
       </div>
 
-      <!-- VISUAL FILE TREE DIRECTORY PICKER MODAL -->
+      <!-- FILE TREE MODAL -->
       <div v-if="showTreeModal" class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50">
         <div class="bg-slate-900 border border-slate-700 rounded-2xl w-[560px] h-[480px] flex flex-col shadow-2xl overflow-hidden">
           <div class="p-3 bg-slate-950 border-b border-slate-800 flex justify-between items-center">
@@ -296,7 +296,7 @@
         </div>
       </div>
 
-      <!-- ARCTIC ANIMATION MODAL WITH LIVE COUNTDOWN (DURING BUSY) -->
+      <!-- ARCTIC ANIMATION MODAL -->
       <div v-if="busy" class="absolute inset-0 bg-slate-950/85 backdrop-blur-md flex flex-col items-center justify-center z-50">
         <div class="bg-slate-900/95 border border-sky-800/80 p-6 rounded-3xl shadow-2xl flex flex-col items-center w-[540px]">
           <h3 class="text-sm font-bold text-sky-300 mb-1 flex items-center gap-2">
@@ -313,7 +313,6 @@
 
             <div class="absolute bottom-0 left-0 right-0 h-28 bg-gradient-to-t from-[#021324] via-[#032842] to-[#03446b]/60"></div>
 
-            <!-- Left Iceberg Island -->
             <div class="iceberg-left-island absolute left-2 top-16 w-44 h-36 pointer-events-none z-10">
               <svg viewBox="0 0 160 130" class="w-full h-full filter drop-shadow(0 10px 14px rgba(0,0,0,0.6))">
                 <polygon points="15,44 26,118 108,122 135,44" fill="#0284c7" opacity="0.4"/>
@@ -325,12 +324,10 @@
               </svg>
             </div>
 
-            <!-- Open Freezing Channel -->
             <div class="absolute left-44 right-44 top-20 bottom-0 pointer-events-none z-0 flex items-center justify-center">
               <div class="text-[9px] text-sky-400/30 uppercase tracking-widest font-mono">Freezing Channel</div>
             </div>
 
-            <!-- Right Iceberg Island -->
             <div class="iceberg-right-island absolute right-2 top-16 w-44 h-36 pointer-events-none z-10">
               <svg viewBox="0 0 160 130" class="w-full h-full filter drop-shadow(0 10px 14px rgba(0,0,0,0.6))">
                 <polygon points="20,44 48,118 116,120 140,44" fill="#0284c7" opacity="0.4"/>
@@ -342,7 +339,6 @@
               </svg>
             </div>
 
-            <!-- Polar Bear Actor -->
             <div class="polar-bear-actor">
               <svg width="60" height="42" viewBox="0 0 64 46" fill="none">
                 <ellipse cx="32" cy="42" rx="22" ry="3.5" fill="#0284c7" opacity="0.35"/>
@@ -359,7 +355,6 @@
               </svg>
             </div>
 
-            <!-- Arctic Explorer Actor -->
             <div class="explorer-actor">
               <svg width="30" height="46" viewBox="0 0 28 46" fill="none">
                 <ellipse cx="14" cy="43" rx="10" ry="2.5" fill="#0284c7" opacity="0.35"/>
@@ -395,7 +390,6 @@
             </div>
           </div>
 
-          <!-- Dynamic Status Countdown -->
           <div class="w-full mt-4 flex flex-col items-center">
             <div class="text-xs font-mono text-sky-300 mb-1">
               {{ statusMessage }}
@@ -498,7 +492,7 @@
               const err = await res.json();
               throw new Error(err.detail || "Update failed.");
             }
-            alert("Update downloaded successfully! The application will restart in a moment. Refresh your browser in 5 seconds.");
+            alert("Update downloaded successfully! Relaunching in 5 seconds...");
           } catch (e) {
             alert("Auto-update failed: " + e.message);
           } finally {
@@ -515,7 +509,6 @@
           this.osMode = (this.osMode === "win") ? "lin" : "win";
           const fromSep = (this.osMode === "win") ? "/" : "\\\\";
           const toSep = (this.osMode === "win") ? "\\" : "/";
-          
           for (const k in this.paths) {
             this.paths[k] = this.paths[k].split(fromSep).join(toSep);
           }
@@ -581,6 +574,28 @@
             alert("Editor error: " + e.message);
           }
         },
+        async removeDuplicateKey(line, keyName) {
+          this.busy = true;
+          try {
+            const res = await fetch('/api/fix-duplicate-key', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ line: line, key: keyName })
+            });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "Failed to remove duplicate line.");
+            }
+            const d = await res.json();
+            this.activeIssues = d.issues || [];
+            const target = this.batchFiles.find(f => f.path === this.activeFile);
+            if (target) target.issue_count = this.activeIssues.length;
+          } catch (e) {
+            alert("Error: " + e.message);
+          } finally {
+            this.busy = false;
+          }
+        },
         async startStreamScan() {
           this.busy = true;
           this.currentAction = "scan";
@@ -628,7 +643,7 @@
           }
         },
         async startStreamMasterComplete() {
-          if (!confirm("Run Master Complete across all playfields?")) return;
+          if (!confirm("Run Master Complete across all playfields? This will loop-resolve ALL duplicate keys and missing prefabs.")) return;
           this.busy = true;
           this.currentAction = "complete";
 
@@ -657,7 +672,7 @@
                   } else if (payload.type === 'complete') {
                     this.batchFiles = payload.batch_files || [];
                     this.activeIssues = payload.active_issues || [];
-                    alert(`Master Complete Finished! Auto-repaired ${payload.repaired_count} playfields.`);
+                    alert(`Master Complete Finished! Auto-repaired and saved ${payload.repaired_count} playfields.`);
                   }
                 }
               }
