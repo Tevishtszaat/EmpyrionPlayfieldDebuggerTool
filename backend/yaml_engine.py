@@ -6,11 +6,49 @@ from datetime import datetime
 from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError
+from ruamel.yaml.scanner import ScannerError
 
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
 yaml.width = 100000
+
+def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
+    """
+    Expands tab characters into the mathematically exact number of spaces needed
+    to reach the next tab stop, guaranteeing indentation hierarchy is never corrupted.
+    """
+    if '\t' not in text:
+        return text, False
+
+    new_lines = []
+    has_tabs = False
+
+    for line in text.splitlines(keepends=True):
+        if '\t' not in line:
+            new_lines.append(line)
+            continue
+
+        has_tabs = True
+        out_chars = []
+        col = 0
+
+        for char in line:
+            if char == '\t':
+                # Calculate spaces to reach next tab stop
+                spaces_to_add = tab_size - (col % tab_size)
+                out_chars.append(' ' * spaces_to_add)
+                col += spaces_to_add
+            else:
+                out_chars.append(char)
+                if char in ('\r', '\n'):
+                    col = 0
+                else:
+                    col += 1
+
+        new_lines.append("".join(out_chars))
+
+    return "".join(new_lines), has_tabs
 
 def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
     """Guarantees Description, Biome, and Value statements stay on ONE SINGLE LINE."""
@@ -37,7 +75,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 starts_quote = first_val.startswith('"') or first_val.startswith("'")
                 qchar = first_val[0] if starts_quote else None
 
-                # Single-line check (respecting escaped quotes)
                 if starts_quote and len(first_val) > 1 and first_val.endswith(qchar):
                     escaped = False
                     for c in reversed(first_val[:-1]):
@@ -58,7 +95,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                         break
                     stripped = next_line.strip()
                     if starts_quote and qchar in stripped:
-                        # Find unescaped quote delimiter
                         idx_q = -1
                         for idx_c, char in enumerate(stripped):
                             if char == qchar:
@@ -90,7 +126,7 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 2. Biome: [ ... ] multi-line wrap
+            # 2. Biome: [ ... ]
             biome_match = re.match(r'^([ \t]*Biome:[ \t]*\[)(.*)$', line)
             if biome_match and not line.rstrip().endswith("]"):
                 prefix = biome_match.group(1)
@@ -120,7 +156,7 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 3. Value: ... multi-line wrap
+            # 3. Value: ...
             value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
             if value_match:
                 prefix = value_match.group(1)
@@ -175,8 +211,36 @@ class PlayfieldAST:
         self.data = None
         self.parse_error = None
         self.duplicate_key_info = None
+        self.tab_repaired = False
+
+        # 1. Perform Column-Aware Tab Expansion to eliminate '\t' halts
+        self.detab_content()
+        # 2. Sanitize Description, Biome, and Value line-wrapping
         self.sanitize_lines()
+        # 3. Load AST
         self.load()
+
+    def detab_content(self) -> bool:
+        """Expands any illegal tabs to exact column-stop spaces."""
+        if not self.path.exists():
+            return False
+
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                raw_text = f.read()
+
+            clean_text, has_tabs = expand_tabs_to_column_stops(raw_text, tab_size=2)
+            if has_tabs:
+                self.backup()
+                with open(self.path, "w", encoding="utf-8") as f:
+                    f.write(clean_text)
+                    f.flush()
+                    os.fsync(f.fileno())
+                self.tab_repaired = True
+                return True
+        except Exception:
+            pass
+        return False
 
     def sanitize_lines(self) -> bool:
         return enforce_strict_single_lines_on_disk(self.path)
@@ -250,7 +314,6 @@ class PlayfieldAST:
         return False
 
     def get_container(self, source: str):
-        """Strict container resolution: Random never mutates Fixed, and vice versa."""
         if not self.data or not isinstance(self.data, dict):
             return None
         if source == "Objects":
@@ -266,7 +329,6 @@ class PlayfieldAST:
         return None
 
     def correct_biome(self, source: str, index: int, new_biome: str, bad_biomes=None, save_immediately=True):
-        """Replaces only invalid biomes within a multi-biome array, preserving valid ones."""
         container = self.get_container(source)
         if container is not None and 0 <= index < len(container):
             item = container[index]
@@ -323,7 +385,8 @@ class PlayfieldAST:
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
-        """Batch-processes mutations by source container to prevent index corruption and I/O thrashing."""
+        # Guarantee tabs are eliminated and single-lines enforced
+        self.detab_content()
         self.sanitize_lines()
 
         if not issues:
@@ -332,13 +395,11 @@ class PlayfieldAST:
         repaired = 0
         pruned = 0
 
-        # Group issues by source container to isolate array shift operations
         grouped = {}
         for issue in issues:
             src = issue.get("source", "Random")
             grouped.setdefault(src, []).append(issue)
 
-        # Mutate in-memory with descending indices within each container
         for src, src_issues in grouped.items():
             sorted_src_issues = sorted(src_issues, key=lambda x: x.get("index", -1), reverse=True)
             for issue in sorted_src_issues:
@@ -361,6 +422,5 @@ class PlayfieldAST:
                     if self.remove_target(src, idx, save_immediately=False):
                         pruned += 1
 
-        # Perform one atomic disk write and backup at the end
         self.save_atomic()
         return {"repaired": repaired, "pruned": pruned}
