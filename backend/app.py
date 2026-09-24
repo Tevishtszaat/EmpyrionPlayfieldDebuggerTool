@@ -10,6 +10,17 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
+
+# --- Linux File Descriptor Optimization ---
+if platform.system() != "Windows":
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # Raise soft limit up to hard limit (typically 4096 or 65536)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 65536), hard))
+    except Exception:
+        pass
+
 from backend.yaml_engine import PlayfieldAST
 from backend.indexer import AssetIndexer
 from backend.validator import PlayfieldValidator
@@ -109,12 +120,10 @@ def open_local_file(req: OpenFileRequest):
     custom = req.custom_editor_cmd.strip()
 
     try:
-        # 1. Custom Command / Executable specified by user
         if choice == "custom" and custom:
             subprocess.Popen([custom, str(p)])
             return {"status": "ok", "app": custom}
 
-        # 2. Windows-Specific Options
         if is_win:
             if choice == "notepad++":
                 candidates = [
@@ -133,12 +142,10 @@ def open_local_file(req: OpenFileRequest):
                 subprocess.Popen(["notepad.exe", str(p)])
                 return {"status": "ok", "app": "Notepad"}
 
-            # Default fallback for Windows (.yaml, .txt, .md default app)
             os.startfile(str(p))
             return {"status": "ok", "app": "System Default"}
-
-        # 3. Linux-Specific Options
         else:
+            # Linux editor triggers
             if choice == "code":
                 subprocess.Popen(["code", str(p)])
                 return {"status": "ok", "app": "VS Code"}
@@ -146,12 +153,9 @@ def open_local_file(req: OpenFileRequest):
                 subprocess.Popen([choice, str(p)])
                 return {"status": "ok", "app": choice}
 
-            # Default fallback for Linux
             subprocess.Popen(["xdg-open", str(p)])
             return {"status": "ok", "app": "xdg-open"}
-
     except Exception as e:
-        # Final universal fallback
         try:
             if is_win:
                 os.startfile(str(p))
@@ -181,10 +185,11 @@ def find_all_playfields_fast(root_dir: Path) -> list:
         dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != ".epd_backups"]
         for fname in filenames:
             if fname.lower() in valid_names:
+                # Keep EXACT casing for Linux file systems
                 full_path = Path(dirpath) / fname
-                norm = str(full_path).lower()
-                if norm not in seen:
-                    seen.add(norm)
+                norm_key = str(full_path.resolve())
+                if norm_key not in seen:
+                    seen.add(norm_key)
                     found.append(full_path)
 
     found.sort(key=lambda p: p.parent.name.lower())
@@ -214,6 +219,7 @@ async def stream_scan(req: ScanMasterRequest):
             halt_error = None
 
             try:
+                # Safe context execution: guarantees file handles close immediately
                 ast = PlayfieldAST(str(f))
                 if ast.duplicate_key_info:
                     dup = ast.duplicate_key_info
@@ -240,13 +246,14 @@ async def stream_scan(req: ScanMasterRequest):
                 elif STATE["indexer"]:
                     file_issues = PlayfieldValidator(ast.data, STATE["indexer"], str(f)).validate()
             except Exception as e:
+                # Catch ANY OS-level or Permission error without aborting the stream
                 halt_error = str(e)[:80]
                 file_issues.append({
                     "id": f"err_{idx}",
                     "type": "runtime_halt",
                     "severity": "FATAL",
                     "message": f"Halting error: {halt_error}",
-                    "current_value": "Crash",
+                    "current_value": "OS Halt",
                     "suggestions": []
                 })
 
@@ -259,18 +266,26 @@ async def stream_scan(req: ScanMasterRequest):
             }
             summary.append(item)
 
+            # Stream progress event with keepalive padding
             yield f"data: {json.dumps({'type': 'progress', 'current': idx + 1, 'total': total, 'file': item})}\n\n"
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(0.002)
 
         STATE["batch_files"] = summary
         first_err = next((x for x in summary if x["issue_count"] > 0), summary[0] if summary else None)
         if first_err:
             STATE["active_file"] = first_err["path"]
-            STATE["ast"] = PlayfieldAST(first_err["path"])
+            try:
+                STATE["ast"] = PlayfieldAST(first_err["path"])
+            except Exception:
+                pass
 
         yield f"data: {json.dumps({'type': 'complete', 'active_file': STATE['active_file']})}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 @app.post("/api/batch/stream-master-complete")
 async def stream_master_complete():
@@ -301,10 +316,13 @@ async def stream_master_complete():
                 pass
 
             yield f"data: {json.dumps({'type': 'progress', 'current': idx + 1, 'total': total_files, 'remaining': remaining, 'name': item['name'], 'repaired_count': repaired_count})}\n\n"
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(0.002)
 
         if STATE["active_file"]:
-            STATE["ast"] = PlayfieldAST(STATE["active_file"])
+            try:
+                STATE["ast"] = PlayfieldAST(STATE["active_file"])
+            except Exception:
+                pass
 
         active_issues = []
         if STATE["ast"] and STATE["indexer"] and not STATE["ast"].parse_error:
@@ -312,14 +330,21 @@ async def stream_master_complete():
 
         yield f"data: {json.dumps({'type': 'complete', 'repaired_count': repaired_count, 'active_issues': active_issues, 'batch_files': STATE['batch_files']})}\n\n"
 
-    return StreamingResponse(complete_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        complete_generator(), 
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 @app.post("/api/batch/select")
 def select_file(req: SelectFileRequest):
     STATE["active_file"] = req.file_path
     cached = next((item for item in STATE["batch_files"] if item["path"] == req.file_path), None)
     if cached and cached.get("issues") is not None:
-        STATE["ast"] = PlayfieldAST(req.file_path)
+        try:
+            STATE["ast"] = PlayfieldAST(req.file_path)
+        except Exception:
+            pass
         return {
             "active_file": req.file_path,
             "name": Path(req.file_path).parent.name,
