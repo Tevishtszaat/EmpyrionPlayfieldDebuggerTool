@@ -23,7 +23,6 @@ class PlayfieldValidator:
         self.valid_eclasses = getattr(indexer, 'valid_eclasses', set())
         self.planet_biomes = self.extract_planet_biomes()
 
-        # Engine-level origin anchors & dummy POIs (Never missing, always valid)
         self.null_poi_whitelist = {
             "nullpoi", "null_poi", "emptypoi", "empty_poi", 
             "null", "nullorigin", "originpoi", "dummy_poi", "dummypoi"
@@ -82,9 +81,49 @@ class PlayfieldValidator:
         if not self.data or not isinstance(self.data, dict):
             return issues
 
-        targets = []
+        playfield_type = str(self.data.get("PlayfieldType", "")).lower()
+        is_space = (playfield_type == "space") or ("space" in (self.file_path.stem.lower() if self.file_path else ""))
 
-        # 1. Random and Fixed POIs
+        # -------------------------------------------------------------
+        # CHECK A: Instance Header Audit (ExampleInstance rule)
+        # -------------------------------------------------------------
+        if self.file_path and "instance" in self.file_path.parent.name.lower():
+            is_instance_flagged = bool(self.data.get("Instance") is True)
+            if not is_instance_flagged:
+                issues.append({
+                    "id": "hdr_instance_missing",
+                    "source": "Header",
+                    "index": 0,
+                    "type": "missing_instance_flag",
+                    "severity": "WARNING",
+                    "message": "Instance folder detected but top-level 'Instance: true' header is missing!",
+                    "current_value": f"Folder: {self.file_path.parent.name} | Instance: None",
+                    "suggestions": []
+                })
+
+        # -------------------------------------------------------------
+        # CHECK B: Space Fog & SunFlare Verification (ExampleSpace rule)
+        # -------------------------------------------------------------
+        if is_space:
+            space_fog = self.data.get("SpaceFog")
+            if space_fog and isinstance(space_fog, str):
+                sf_clean = space_fog.strip().lower()
+                if sf_clean not in self.valid_eclasses and not sf_clean.startswith("spacefog"):
+                    issues.append({
+                        "id": "space_fog_missing",
+                        "source": "Header",
+                        "index": 0,
+                        "type": "invalid_space_fog",
+                        "severity": "WARNING",
+                        "message": f"SpaceFog '{space_fog}' not found in engine EntityClasses!",
+                        "current_value": space_fog,
+                        "suggestions": ["SpaceFog", "SpaceFogRed", "SpaceFogBlue", "SpaceFogGreen"]
+                    })
+
+        targets = []
+        existing_poi_names = set()
+
+        # 1. Random & Fixed POIs
         raw_pois = self.data.get("POIs", {})
         if isinstance(raw_pois, dict):
             r_list = raw_pois.get("Random", [])
@@ -112,6 +151,16 @@ class PlayfieldValidator:
                 if isinstance(item, dict):
                     targets.append({"source": "DroneSpawns", "index": idx, "data": item})
 
+        # Pre-collect all active POI names to audit drone hives
+        for entry in targets:
+            poi = entry["data"]
+            g_name = str(poi.get("GroupName", "")).strip().lower()
+            p_name = str(poi.get("Prefab", "")).strip().lower()
+            n_name = str(poi.get("Name", "")).strip().lower()
+            for n in [g_name, p_name, n_name]:
+                if n:
+                    existing_poi_names.add(n)
+
         for entry in targets:
             source = entry["source"]
             idx = entry["index"]
@@ -127,9 +176,52 @@ class PlayfieldValidator:
 
             target_id = compound_name or group_name or prefab
 
-            # CHECK 0: Is this a NullPOI origin anchor placeholder? (Skip immediately!)
+            # Check 0: NullPOI Origin Anchor (Skip)
             if self.is_null_poi(prefab) or self.is_null_poi(group_name) or self.is_null_poi(target_id):
                 continue
+
+            # -------------------------------------------------------------
+            # CHECK C: Space Sector Coordinate Boundary (ExampleSpace rule)
+            # -------------------------------------------------------------
+            if is_space:
+                pos = poi.get("Pos")
+                if isinstance(pos, list) and len(pos) >= 3:
+                    try:
+                        coords = [abs(float(c)) for c in pos[:3]]
+                        if any(c > 25000 for c in coords):
+                            issues.append({
+                                "id": f"bound_{source}_{idx}",
+                                "source": source,
+                                "index": idx,
+                                "type": "out_of_bounds_pos",
+                                "severity": "WARNING",
+                                "message": f"Object '{target_id}' coordinates exceed sector radius (>25,000m)!",
+                                "current_value": f"Pos: {pos}",
+                                "faction": faction,
+                                "group_name": group_name,
+                                "suggestions": []
+                            })
+                    except (ValueError, TypeError):
+                        pass
+
+            # -------------------------------------------------------------
+            # CHECK D: Orphan Drone Base Hive Audit (ExamplePlanet/Space rule)
+            # -------------------------------------------------------------
+            if source == "DroneSpawns":
+                drone_base = str(poi.get("Base", "")).strip()
+                if drone_base and drone_base.lower() not in existing_poi_names and not self.is_null_poi(drone_base):
+                    issues.append({
+                        "id": f"orphan_drone_{source}_{idx}",
+                        "source": source,
+                        "index": idx,
+                        "type": "orphan_drone_base",
+                        "severity": "WARNING",
+                        "message": f"Drone hive Base '{drone_base}' does not exist in POIs list on this playfield!",
+                        "current_value": f"Base: {drone_base}",
+                        "faction": faction,
+                        "group_name": group_name,
+                        "suggestions": []
+                    })
 
             # Check Biomes
             if self.planet_biomes and len(self.planet_biomes) > 3:
@@ -166,7 +258,7 @@ class PlayfieldValidator:
 
             target_lower = target_id.lower()
 
-            # Check EClass (Asteroid Field, Fog, Gas Clouds, etc.)
+            # Check EClass (Asteroids, clouds, hazards)
             if target_lower in self.valid_eclasses or any(target_lower.startswith(ec) for ec in ["asteroid", "gascloud", "spacefog"]):
                 continue
 
