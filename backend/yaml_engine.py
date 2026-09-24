@@ -6,18 +6,32 @@ from datetime import datetime
 from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError
-from ruamel.yaml.scanner import ScannerError
 
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
 yaml.width = 100000
 
+# Reserved YAML keywords in Empyrion playfields (Items like 'Electronics:20' are NOT in this set)
+RESERVED_YAML_KEYS = {
+    "key", "value", "groupname", "prefab", "name", "model", "type", "faction",
+    "pos", "rot", "initresource", "biom", "biome", "delayminmax", "delaybetweenspawns",
+    "parent", "properties", "random", "fixed", "objects", "dronespawns", "structures",
+    "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity"
+}
+
+def is_true_yaml_key(line: str) -> bool:
+    """Checks if an indented line is a genuine YAML structural key, rather than an item like 'Electronics:20'."""
+    stripped = line.strip()
+    if stripped.startswith("-"):
+        return True
+    if ":" in stripped:
+        possible_key = stripped.split(":", 1)[0].strip().lower()
+        if possible_key in RESERVED_YAML_KEYS:
+            return True
+    return False
+
 def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
-    """
-    Expands tab characters into the mathematically exact number of spaces needed
-    to reach the next tab stop, guaranteeing indentation hierarchy is never corrupted.
-    """
     if '\t' not in text:
         return text, False
 
@@ -35,7 +49,6 @@ def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
 
         for char in line:
             if char == '\t':
-                # Calculate spaces to reach next tab stop
                 spaces_to_add = tab_size - (col % tab_size)
                 out_chars.append(' ' * spaces_to_add)
                 col += spaces_to_add
@@ -91,7 +104,7 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 j = i + 1
                 while j < n:
                     next_line = lines[j]
-                    if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) and not next_line.strip().startswith("-"):
+                    if is_true_yaml_key(next_line):
                         break
                     stripped = next_line.strip()
                     if starts_quote and qchar in stripped:
@@ -156,22 +169,25 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 3. Value: ...
+            # 3. Value: ... (Container loot items like 'Pistol, 50Caliber:80, Electronics:20...')
             value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
             if value_match:
                 prefix = value_match.group(1)
-                first_val = value_match.group(2).rstrip('\r\n')
+                first_val = value_match.group(2).rstrip('\r\n').strip(' "\'')
 
                 j = i + 1
                 is_wrapped = False
-                parts = [first_val.strip()] if first_val.strip() else []
+                parts = [first_val] if first_val else []
 
                 while j < n:
                     next_line = lines[j]
-                    if re.match(r'^[ \t]*[A-Za-z0-9_-]+:', next_line) or next_line.strip().startswith("-"):
+                    # Stop ONLY if it's a real structural YAML key (e.g., - Key:, Pos:, Rot:)
+                    if is_true_yaml_key(next_line):
                         break
+
+                    # If it's an indented continuation of items (even if it contains colons like Electronics:20)
                     if next_line.startswith(" ") or next_line.startswith("\t"):
-                        stripped = next_line.strip()
+                        stripped = next_line.strip().strip(' "\'')
                         if stripped:
                             parts.append(stripped)
                             is_wrapped = True
@@ -183,7 +199,8 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                     combined_val = " ".join(parts)
                     combined_val = re.sub(r'[ \t]*,[ \t]*', ', ', combined_val)
                     combined_val = re.sub(r'[ \t]+', ' ', combined_val).strip()
-                    new_lines.append(f'{prefix} {combined_val}\n')
+                    # Enclose in quotes to guarantee item colons (Item:Count) never break YAML parsers
+                    new_lines.append(f'{prefix} "{combined_val}"\n')
                     modified = True
                     i = j
                     continue
@@ -211,17 +228,12 @@ class PlayfieldAST:
         self.data = None
         self.parse_error = None
         self.duplicate_key_info = None
-        self.tab_repaired = False
 
-        # 1. Perform Column-Aware Tab Expansion to eliminate '\t' halts
         self.detab_content()
-        # 2. Sanitize Description, Biome, and Value line-wrapping
         self.sanitize_lines()
-        # 3. Load AST
         self.load()
 
     def detab_content(self) -> bool:
-        """Expands any illegal tabs to exact column-stop spaces."""
         if not self.path.exists():
             return False
 
@@ -236,7 +248,6 @@ class PlayfieldAST:
                     f.write(clean_text)
                     f.flush()
                     os.fsync(f.fileno())
-                self.tab_repaired = True
                 return True
         except Exception:
             pass
@@ -385,7 +396,6 @@ class PlayfieldAST:
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
-        # Guarantee tabs are eliminated and single-lines enforced
         self.detab_content()
         self.sanitize_lines()
 
