@@ -16,7 +16,7 @@ RESERVED_YAML_KEYS = {
     "key", "value", "groupname", "prefab", "name", "names", "model", "type", "faction",
     "pos", "rot", "initresource", "biom", "biome", "delayminmax", "delaybetweenspawns",
     "parent", "properties", "random", "fixed", "objects", "dronespawns", "structures",
-    "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity"
+    "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity", "mode"
 }
 
 def is_true_yaml_key(line: str) -> bool:
@@ -262,9 +262,16 @@ class PlayfieldAST:
         self.detab_content()
         self.sanitize_lines()
         self.load()
+        # Clean both illegal 'Prefab' AND illegal 'Mode' from RandomPoiData
         self.sanitize_random_poi_keys()
 
     def sanitize_random_poi_keys(self) -> bool:
+        """
+        Empyrion C# Engine Rules:
+        - RandomPoiData does NOT have a 'Prefab' property (must use GroupName).
+        - RandomPoiData does NOT have a 'Mode' property (only valid in FixedPoiData).
+        - RandomPoiData does NOT have 'Pos' or 'Rot' properties.
+        """
         if not self.data or not isinstance(self.data, dict):
             return False
 
@@ -278,11 +285,26 @@ class PlayfieldAST:
 
         modified = False
         for item in random_list:
-            if isinstance(item, dict) and "Prefab" in item:
-                if "GroupName" not in item or not item["GroupName"]:
-                    item["GroupName"] = item["Prefab"]
-                del item["Prefab"]
-                modified = True
+            if isinstance(item, dict):
+                # 1. Illegal Prefab in Random
+                if "Prefab" in item:
+                    if "GroupName" not in item or not item["GroupName"]:
+                        item["GroupName"] = item["Prefab"]
+                    del item["Prefab"]
+                    modified = True
+
+                # 2. Illegal Mode in Random (causes SerializationException: Property 'Mode' not found)
+                if "Mode" in item:
+                    del item["Mode"]
+                    modified = True
+
+                # 3. Illegal Pos/Rot in Random
+                if "Pos" in item:
+                    del item["Pos"]
+                    modified = True
+                if "Rot" in item:
+                    del item["Rot"]
+                    modified = True
 
         if modified:
             self.save_atomic()
@@ -349,7 +371,6 @@ class PlayfieldAST:
         enforce_strict_single_lines_on_disk(self.path)
 
     def remove_duplicate_key_line(self, line_number: int, key_name: str) -> bool:
-        """Comments out the duplicate key line and reloads to check if more duplicates exist."""
         if not self.path.exists() or line_number <= 0:
             return False
 
@@ -382,7 +403,6 @@ class PlayfieldAST:
         return False
 
     def auto_resolve_all_duplicate_keys(self) -> int:
-        """Looping deduplicator: continuously resolves duplicate keys until file loads cleanly."""
         resolved = 0
         max_passes = 25
         while self.duplicate_key_info and max_passes > 0:
@@ -451,6 +471,8 @@ class PlayfieldAST:
                         item["GroupName"] = new_value
                         if "Prefab" in item:
                             del item["Prefab"]
+                        if "Mode" in item:
+                            del item["Mode"]
                     else:
                         item["Prefab"] = new_value
                         if "GroupName" in item:
@@ -471,9 +493,7 @@ class PlayfieldAST:
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
-        # 1. First loop-resolve any duplicate keys until completely clear
         self.auto_resolve_all_duplicate_keys()
-        
         clean_empty_null_yaml_keys(self.path)
         self.detab_content()
         self.sanitize_lines()
