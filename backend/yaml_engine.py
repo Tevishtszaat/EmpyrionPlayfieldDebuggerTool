@@ -29,6 +29,44 @@ def is_true_yaml_key(line: str) -> bool:
             return True
     return False
 
+def clean_empty_null_yaml_keys(file_path: Path) -> bool:
+    if not file_path.exists():
+        return False
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        modified = False
+        new_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "-":
+                new_lines.append(f"# [EPD Auto-Removed Empty Item]: {line}")
+                modified = True
+                continue
+
+            match = re.match(r'^([ \t]*)([A-Za-z0-9_-]+):[ \t]*$', line)
+            if match:
+                key_name = match.group(2).lower()
+                if key_name in {"prefab", "faction", "groupname", "name", "model", "type"}:
+                    new_lines.append(f"# [EPD Auto-Commented Empty Key]: {line}")
+                    modified = True
+                    continue
+
+            new_lines.append(line)
+
+        if modified:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            return True
+    except Exception:
+        pass
+    return False
+
 def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
     if '\t' not in text:
         return text, False
@@ -62,7 +100,6 @@ def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
     return "".join(new_lines), has_tabs
 
 def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
-    """Universal flattener: Guarantees ANY bracketed [ ... ], Description, or Value stays on ONE line."""
     if not file_path.exists():
         return False
 
@@ -78,7 +115,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
         while i < n:
             line = lines[i]
 
-            # 1. Description: ...
             desc_match = re.match(r'^([ \t]*Description:)\s*(.*)$', line)
             if desc_match:
                 prefix = desc_match.group(1)
@@ -137,7 +173,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 2. UNIVERSAL BRACKET FLATTENER: Matches ANY key opening a bracket '[' (Names:, Biome:, Pos:, etc.)
             flow_match = re.match(r'^([ \t]*[A-Za-z0-9_-]+:[ \t]*\[)(.*)$', line)
             if flow_match and "]" not in flow_match.group(2):
                 prefix = flow_match.group(1)
@@ -159,7 +194,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                             parts.append(stripped)
                     j += 1
 
-                # Clean up commas and spaces inside [item1, item2, item3]
                 combined_items = " ".join(parts)
                 tokens = [t.strip().strip(',').strip() for t in combined_items.split(',') if t.strip()]
                 clean_flow_str = ", ".join(tokens)
@@ -168,7 +202,6 @@ def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
                 i = j
                 continue
 
-            # 3. Value: ... (Container loot items)
             value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
             if value_match:
                 prefix = value_match.group(1)
@@ -225,9 +258,40 @@ class PlayfieldAST:
         self.parse_error = None
         self.duplicate_key_info = None
 
+        clean_empty_null_yaml_keys(self.path)
         self.detab_content()
         self.sanitize_lines()
         self.load()
+        # Clean any illegal Prefab keys inside POIs: Random
+        self.sanitize_random_poi_keys()
+
+    def sanitize_random_poi_keys(self) -> bool:
+        """Empyrion engine rule: RandomPoiData does NOT have a 'Prefab' property. Convert to GroupName."""
+        if not self.data or not isinstance(self.data, dict):
+            return False
+
+        pois = self.data.get("POIs", {})
+        if not isinstance(pois, dict):
+            return False
+
+        random_list = pois.get("Random", [])
+        if not isinstance(random_list, list):
+            return False
+
+        modified = False
+        for item in random_list:
+            if isinstance(item, dict) and "Prefab" in item:
+                # If no GroupName, copy Prefab to GroupName
+                if "GroupName" not in item or not item["GroupName"]:
+                    item["GroupName"] = item["Prefab"]
+                # Delete illegal Prefab key
+                del item["Prefab"]
+                modified = True
+
+        if modified:
+            self.save_atomic()
+            return True
+        return False
 
     def detab_content(self) -> bool:
         if not self.path.exists():
@@ -373,9 +437,15 @@ class PlayfieldAST:
                     if "GroupName" in item:
                         item["GroupName"] = new_value
                 else:
-                    item["Prefab"] = new_value
-                    if "GroupName" in item:
+                    # Empyrion C# Rule: Random POIs MUST use GroupName, NEVER Prefab
+                    if source == "Random":
                         item["GroupName"] = new_value
+                        if "Prefab" in item:
+                            del item["Prefab"]
+                    else:
+                        item["Prefab"] = new_value
+                        if "GroupName" in item:
+                            item["GroupName"] = new_value
 
                 if save_immediately:
                     self.save_atomic()
@@ -392,10 +462,12 @@ class PlayfieldAST:
         return False
 
     def autocomplete_all_issues(self, issues, indexer):
+        clean_empty_null_yaml_keys(self.path)
         self.detab_content()
         self.sanitize_lines()
 
         if not issues:
+            self.sanitize_random_poi_keys()
             return {"repaired": 0, "pruned": 0}
 
         repaired = 0
@@ -428,5 +500,6 @@ class PlayfieldAST:
                     if self.remove_target(src, idx, save_immediately=False):
                         pruned += 1
 
+        self.sanitize_random_poi_keys()
         self.save_atomic()
         return {"repaired": repaired, "pruned": pruned}
