@@ -1,0 +1,21 @@
+# Demo planet layout. Biome names live here, POIs live in playfield_static.yaml.
+PlayfieldType: Planet
+PlanetType: Temperate
+Description: "Demo temperate world used by Playfield Studio"
+RandomResources:
+  - Name: IronResource
+    CountMinMax: [4, 6]
+    SizeMinMax: [8, 12]
+    DepthMinMax: [0, 1]
+    DroneProb: 0.2
+TerrainBands:
+  - Altitude: [0, 120]
+    BiomeClusterData:
+      - Name: Desert
+        Id: 1
+        ClusterSize: 0
+        NbOfClusters: 0
+      - Name: Forest
+        Id: 2
+        ClusterSize: 0
+        NbOfClusters: 0

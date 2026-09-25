@@ -1,0 +1,3 @@
+PlayfieldType: Planet
+PlayfieldType: Moon
+Description: "Duplicate PlayfieldType — the loader stops on this."

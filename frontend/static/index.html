@@ -103,7 +103,7 @@
           <span>{{ busy ? '⚡ Processing...' : '📁 Scan All Directories' }}</span>
         </button>
         <button @click="startStreamMasterComplete" :disabled="!batchFiles.length || busy" class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 px-4 py-2 rounded text-xs font-bold transition">
-          🚀 Master Complete All
+          🚀 Safe-fix all
         </button>
       </div>
     </header>
@@ -156,7 +156,7 @@
              :class="activeFile === f.path ? 'bg-sky-950/70 border-l-4 border-sky-400' : 'hover:bg-slate-800/40'" 
              class="p-2.5 border-b border-slate-800/40 cursor-pointer flex justify-between items-center transition">
           <div class="truncate text-xs font-medium" :class="f.halt_error ? 'text-rose-400' : ''">
-            {{ f.name }}
+            {{ f.name }}<span class="text-slate-500"> / {{ f.filename || 'yaml' }}</span>
           </div>
           <div class="flex items-center gap-1">
             <span v-if="f.halt_error" class="text-[9px] bg-rose-950 text-rose-300 border border-rose-800 px-1.5 py-0.5 rounded font-bold">
@@ -181,9 +181,9 @@
             <button @click="openLocalFile(activeFile)" class="bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-600 px-3 py-1.5 rounded text-xs font-bold transition flex items-center gap-1.5">
               <span>📄 Open in {{ displayEditorName }}</span>
             </button>
-            <button @click="autoCompleteSingle" :disabled="busy || activeIssues.length === 0" 
+            <button @click="autoCompleteSingle" :disabled="busy || activeIssues.length === 0"
                     class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 rounded text-xs font-bold transition">
-              ⚡ AutoComplete This File
+              Apply safe fixes
             </button>
           </div>
         </div>
@@ -193,7 +193,10 @@
         </div>
 
         <!-- Issue Cards -->
-        <div v-for="issue in activeIssues" :key="issue.id" class="bg-slate-800/80 border-l-4 border-amber-500 p-4 rounded mb-3 flex justify-between items-center shadow-md">
+        <p v-if="lastFixNote" class="text-[11px] text-slate-400 mb-4 whitespace-pre-wrap">{{ lastFixNote }}</p>
+
+        <div v-for="issue in activeIssues" :key="issue.id" class="bg-slate-800/80 border-l-4 p-4 rounded mb-3 flex justify-between items-center shadow-md"
+             :class="issue.severity === 'FATAL' ? 'border-rose-500' : (issue.severity === 'ERROR' ? 'border-orange-500' : 'border-amber-400')">
           <div class="mr-4">
             <div class="text-xs font-bold text-amber-400">{{ issue.severity }}: {{ issue.message }}</div>
             <div class="text-[11px] text-slate-300 mt-1">Current: <code class="text-rose-300 bg-slate-950 px-1 py-0.5 rounded">{{ issue.current_value }}</code></div>
@@ -210,21 +213,42 @@
           </div>
 
           <!-- ACTIONS: Standard POI / Compound / Biome Errors -->
-          <div v-else class="flex items-center gap-2">
-            <button @click="openLocalFile(activeFile)" class="bg-slate-900 hover:bg-slate-700 text-slate-300 border border-slate-700 p-1.5 rounded text-xs">
-              📄 Line {{ issue.line || '' }}
+          <div v-else-if="issue.type === 'unknown_key'" class="flex items-center gap-2">
+            <button @click="stripKey(issue)" class="bg-rose-600 hover:bg-rose-500 text-white px-3 py-1.5 rounded text-xs font-bold">
+              Strip {{ issue.current_value }}
             </button>
-            <select v-if="issue.suggestions && issue.suggestions.length" v-model="replacements[issue.id]" class="bg-slate-950 text-xs p-1.5 rounded border border-slate-700 max-w-[200px]">
-              <option value="" disabled>Choose Replacement...</option>
+          </div>
+
+          <div v-else-if="issue.type === 'missing_usefixed'" class="flex items-center gap-2">
+            <button @click="applyUseFixed()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded text-xs font-bold">
+              Set UseFixed: true
+            </button>
+          </div>
+
+          <div v-else class="flex items-center gap-2">
+            <button v-if="issue.line" @click="openLocalFile(activeFile)" class="bg-slate-900 hover:bg-slate-700 text-slate-300 border border-slate-700 p-1.5 rounded text-xs">
+              Line {{ issue.line }}
+            </button>
+            <select v-if="issue.suggestions && issue.suggestions.length" v-model="replacements[issue.id]" class="bg-slate-950 text-xs p-1.5 rounded border border-slate-700 max-w-[220px]">
+              <option value="" disabled>Choose replacement...</option>
               <option v-for="name in issue.suggestions" :key="name" :value="name">{{ name }}</option>
             </select>
             <button v-if="issue.suggestions && issue.suggestions.length" @click="fixIssue(issue)" :disabled="!replacements[issue.id]" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 px-3 py-1.5 rounded text-xs font-bold">Apply</button>
-            <button @click="pruneIssue(issue)" class="bg-rose-950 hover:bg-rose-900 border border-rose-700 text-rose-300 px-3 py-1.5 rounded text-xs font-bold">
+            <button v-if="issue.source === 'Random' || issue.source === 'Fixed' || issue.source === 'DroneBaseSetup'" @click="pruneIssue(issue)" class="bg-rose-950 hover:bg-rose-900 border border-rose-700 text-rose-300 px-3 py-1.5 rounded text-xs font-bold">
               Remove
             </button>
           </div>
         </div>
       </main>
+
+      <aside class="w-96 border-l border-slate-800 bg-slate-950/50 flex flex-col min-h-0">
+        <div class="p-2 border-b border-slate-800 flex gap-2 text-[11px]">
+          <button @click="logTab = 'scan'; refreshLogs()" class="px-2 py-1 rounded font-bold" :class="logTab === 'scan' ? 'bg-sky-900 text-sky-200' : 'text-slate-400'">Scan report</button>
+          <button @click="logTab = 'edits'; refreshLogs()" class="px-2 py-1 rounded font-bold" :class="logTab === 'edits' ? 'bg-emerald-900 text-emerald-200' : 'text-slate-400'">Edit log</button>
+          <button @click="loadDemoPaths" class="ml-auto px-2 py-1 rounded border border-slate-700 text-slate-300">Demo galaxy</button>
+        </div>
+        <pre class="flex-1 overflow-auto p-3 text-[10px] leading-relaxed text-slate-300 whitespace-pre-wrap font-mono">{{ logTab === 'scan' ? scanLog : editLog }}</pre>
+      </aside>
 
       <!-- WELCOME MODAL -->
       <div v-if="showWelcomeModal" class="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center z-50">
@@ -434,7 +458,11 @@
           showWelcomeModal: false,
           dontShowWelcomeAgain: false,
           updateInfo: { update_available: false, commits_behind: 0 },
-          updating: false
+          updating: false,
+          logTab: "scan",
+          scanLog: "Scan is read-only. It writes a report here and does not modify playfields.",
+          editLog: "",
+          lastFixNote: ""
         };
       },
       mounted() {
@@ -443,6 +471,10 @@
           this.showWelcomeModal = true;
         }
         this.checkAppVersion();
+        this.refreshLogs();
+        if (new URLSearchParams(location.search).get("demo") === "1") {
+          this.loadDemoPaths();
+        }
       },
       computed: {
         activeFileName() {
@@ -475,6 +507,33 @@
         }
       },
       methods: {
+        async refreshLogs() {
+          try {
+            const [scan, edits] = await Promise.all([
+              fetch('/api/log/scan'),
+              fetch('/api/log/edits')
+            ]);
+            if (scan.ok) this.scanLog = await scan.text();
+            if (edits.ok) this.editLog = await edits.text();
+          } catch (e) {}
+        },
+        async loadDemoPaths() {
+          const res = await fetch('/api/system/demo-paths');
+          if (!res.ok) return;
+          this.paths = await res.json();
+        },
+        noteFixes(payload) {
+          const repaired = (payload && payload.repaired) || [];
+          const skipped = (payload && payload.skipped) || [];
+          if (!repaired.length && !skipped.length) {
+            this.lastFixNote = "";
+            return;
+          }
+          const lines = [];
+          if (repaired.length) lines.push("Applied: " + repaired.join("; "));
+          if (skipped.length) lines.push("Left in place: " + skipped.join("; "));
+          this.lastFixNote = lines.join("\n");
+        },
         async checkAppVersion() {
           try {
             const res = await fetch('/api/system/version');
@@ -602,6 +661,7 @@
           this.batchFiles = [];
           this.activeFile = "";
           this.activeIssues = [];
+          this.lastFixNote = "";
 
           try {
             const response = await fetch('/api/batch/stream-scan', {
@@ -609,6 +669,11 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(this.paths)
             });
+            if (!response.ok) {
+              let msg = response.statusText;
+              try { const err = await response.json(); msg = err.detail || msg; } catch (e) {}
+              throw new Error(msg);
+            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
@@ -632,6 +697,8 @@
                     this.batchFiles.push(payload.file);
                   } else if (payload.type === 'complete') {
                     if (payload.active_file) this.selectFile(payload.active_file);
+                    this.logTab = "scan";
+                    this.refreshLogs();
                   }
                 }
               }
@@ -643,7 +710,7 @@
           }
         },
         async startStreamMasterComplete() {
-          if (!confirm("Run Master Complete across all playfields? This will loop-resolve ALL duplicate keys and missing prefabs.")) return;
+          if (!confirm("Apply only unambiguous fixes (case matches, one-character typos, UseFixed, duplicate keys) and write each change to the edit log? Anything ambiguous is left alone.")) return;
           this.busy = true;
           this.currentAction = "complete";
 
@@ -672,7 +739,9 @@
                   } else if (payload.type === 'complete') {
                     this.batchFiles = payload.batch_files || [];
                     this.activeIssues = payload.active_issues || [];
-                    alert(`Master Complete Finished! Auto-repaired and saved ${payload.repaired_count} playfields.`);
+                    this.logTab = "edits";
+                    this.refreshLogs();
+                    alert(`Master Complete finished. ${payload.repaired_count} file(s) changed. See the edit log for every write. Remaining issues were not guessed.`);
                   }
                 }
               }
@@ -706,8 +775,11 @@
             const res = await fetch('/api/autocomplete', { method: 'POST' });
             const d = await res.json();
             this.activeIssues = d.issues || [];
+            this.noteFixes(d);
+            this.logTab = "edits";
+            this.refreshLogs();
             const target = this.batchFiles.find(f => f.path === this.activeFile);
-            if (target) target.issue_count = d.issues.length;
+            if (target) target.issue_count = (d.issues || []).length;
           } catch (e) {
             alert("AutoComplete error: " + e.message);
           } finally {
@@ -717,23 +789,68 @@
         async fixIssue(issue) {
           this.busy = true;
           try {
-            const res = await fetch('/api/replace-poi', {
+            const chosen = this.replacements[issue.id];
+            const isBiome = issue.type === 'invalid_biome';
+            const url = isBiome ? '/api/fix-biome' : '/api/replace-poi';
+            const body = isBiome
+              ? { source: issue.source, poi_index: issue.index, new_biome: chosen, bad_biomes: issue.bad_biomes || [] }
+              : {
+                  source: issue.source,
+                  poi_index: issue.index,
+                  new_prefab: chosen,
+                  is_compound: (issue.type === 'missing_compound_poi' || issue.type === 'missing_compound_name')
+                };
+            const res = await fetch(url, {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({
-                source: issue.source,
-                poi_index: issue.index,
-                new_prefab: this.replacements[issue.id],
-                is_compound: (issue.type === 'missing_compound_poi')
-              })
+              body: JSON.stringify(body)
             });
             const d = await res.json();
             this.activeIssues = d.issues || [];
             delete this.replacements[issue.id];
+            this.logTab = "edits";
+            this.refreshLogs();
             const target = this.batchFiles.find(f => f.path === this.activeFile);
-            if (target) target.issue_count = d.issues.length;
+            if (target) target.issue_count = (d.issues || []).length;
           } catch (e) {
             alert("Replace error: " + e.message);
+          } finally {
+            this.busy = false;
+          }
+        },
+        async stripKey(issue) {
+          this.busy = true;
+          try {
+            const key = (issue.unknown_keys && issue.unknown_keys[0]) || issue.current_value;
+            const res = await fetch('/api/strip-key', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ source: issue.source, poi_index: issue.index, key: key })
+            });
+            const d = await res.json();
+            this.activeIssues = d.issues || [];
+            this.logTab = "edits";
+            this.refreshLogs();
+            const target = this.batchFiles.find(f => f.path === this.activeFile);
+            if (target) target.issue_count = (d.issues || []).length;
+          } catch (e) {
+            alert("Strip error: " + e.message);
+          } finally {
+            this.busy = false;
+          }
+        },
+        async applyUseFixed() {
+          this.busy = true;
+          try {
+            const res = await fetch('/api/set-use-fixed', { method: 'POST' });
+            const d = await res.json();
+            this.activeIssues = d.issues || [];
+            this.logTab = "edits";
+            this.refreshLogs();
+            const target = this.batchFiles.find(f => f.path === this.activeFile);
+            if (target) target.issue_count = (d.issues || []).length;
+          } catch (e) {
+            alert("UseFixed error: " + e.message);
           } finally {
             this.busy = false;
           }

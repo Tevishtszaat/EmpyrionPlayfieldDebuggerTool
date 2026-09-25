@@ -1,10 +1,62 @@
-﻿import re
+"""Prefab, group, compound, and entity-class index.
+
+Random POIs spawn by the blueprint *group name* stored in the .epb header
+(the F2 dialog), not by a DefPrefabs.yaml list. Fixed POIs spawn by the
+file stem (`Prefab: BA_Outpost` → `BA_Outpost.epb`). Scenario prefabs
+override the base game when both spell the same name.
+"""
+
+from __future__ import annotations
+
+import re
 from pathlib import Path
-from typing import List, Dict, Set
+
 from ruamel.yaml import YAML
 
 yaml = YAML()
 yaml.preserve_quotes = True
+
+_IDENT = re.compile(rb"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_\-]{3,48})(?![A-Za-z0-9_\-])")
+
+# Words that show up in EPB headers and are not group names.
+_STOP = {
+    "prefab", "blueprint", "version", "steam", "creator", "survival", "creative",
+    "entity", "block", "base", "small", "capital", "hover", "voxel", "true",
+    "false", "null", "name", "group", "offset", "ground", "spawn", "device",
+    "signal", "color", "index", "count", "size", "width", "height", "depth",
+    "light", "triangle", "empyrion", "galactic", "header", "build", "player",
+    "public", "private", "neutral", "faction", "value", "type", "mode",
+}
+
+
+def _lev(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > 12:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def harvest_header_names(blob: bytes) -> list[str]:
+    """Group and spawn names are stored as plain ASCII/UTF-8 in the EPB header,
+    before the compressed block grid."""
+    found: list[str] = []
+    seen = set()
+    for match in _IDENT.finditer(blob[:3072]):
+        text = match.group(1).decode("ascii")
+        key = text.lower()
+        if key in _STOP or key in seen:
+            continue
+        seen.add(key)
+        found.append(text)
+    return found
+
 
 class AssetIndexer:
     def __init__(self, scenario_playfields: str, scenario_prefabs: str, game_playfields: str, game_prefabs: str):
@@ -13,171 +65,189 @@ class AssetIndexer:
         self.game_playfields = Path(game_playfields) if game_playfields else None
         self.game_prefabs = Path(game_prefabs) if game_prefabs else None
 
-        self.group_to_prefabs: Dict[str, List[str]] = {}
-        self.type_to_prefabs: Dict[str, List[str]] = {"BA": [], "CV": [], "SV": [], "HV": [], "OTHER": []}
-        self.all_prefabs: List[Dict] = []
-        self.file_names_lower: Set[str] = set()
-        self.valid_compound_pois: Set[str] = set()
-        self.valid_eclasses: Set[str] = set()
+        self.group_canonical: dict[str, str] = {}
+        self.prefab_canonical: dict[str, str] = {}
+        self.compound_canonical: dict[str, str] = {}
+        self.eclass_canonical: dict[str, str] = {}
+        self.prefab_source: dict[str, str] = {}
+        self.ready = False
+        self.notes: list[str] = []
 
     def detect_type(self, name: str) -> str:
-        if not name:
-            return "OTHER"
-        upper = str(name).upper()
-        for t in ["BA", "CV", "SV", "HV"]:
-            if upper.startswith(f"{t}_") or upper.startswith(t):
-                return t
+        upper = str(name or "").upper()
+        for kind in ("BA", "CV", "SV", "HV"):
+            if upper.startswith(kind + "_") or upper.startswith(kind + "-"):
+                return kind
         return "OTHER"
 
-    def load_eclass_config(self):
-        """Scans scenario and vanilla configuration for EClassConfig.ecf and EClassConfig.yaml."""
-        self.valid_eclasses.clear()
-        
-        # Hardcoded engine defaults that are always valid
-        engine_defaults = [
-            "asteroid field", "asteroid", "asteroidv2", "spacefog", "gascloud",
-            "spacedebris", "spacemine", "lasermine", "plasmamine", "orbitalstation"
+    def build(self) -> None:
+        if self.ready:
+            return
+        self._load_eclasses()
+        self._load_compounds()
+        self._load_prefabs()
+        self.ready = True
+
+    def get_available_prefabs(self):
+        """Backward-compatible name. Does not rescan once built."""
+        self.build()
+        return [
+            {"name": name, "source": self.prefab_source.get(key, ""), "type": self.detect_type(name)}
+            for key, name in sorted(self.prefab_canonical.items(), key=lambda kv: kv[1].lower())
         ]
-        for d in engine_defaults:
-            self.valid_eclasses.add(d)
 
-        candidates = []
-        for base in [self.scenario_prefabs, self.game_prefabs]:
-            if base and base.parent:
-                cfg = base.parent / "Configuration"
-                candidates.extend([
-                    cfg / "EClassConfig.ecf",
-                    cfg / "EClassConfig.yaml",
-                    base.parent / "EClassConfig.ecf",
-                    base.parent / "EClassConfig.yaml"
-                ])
-                if base.parent.parent:
-                    candidates.append(base.parent.parent / "Content" / "Configuration" / "EClassConfig.ecf")
-                    candidates.append(base.parent.parent / "Content" / "Configuration" / "EClassConfig.yaml")
+    def _remember(self, table: dict[str, str], name: str, overwrite: bool) -> None:
+        if not name:
+            return
+        key = name.lower()
+        if overwrite or key not in table:
+            table[key] = name
 
-        for c in set(candidates):
-            if c.exists():
-                try:
-                    with open(c, "r", encoding="utf-8", errors="ignore") as f:
-                        for line in f:
-                            line = line.strip()
-                            # ECF format: { EntityClass Id: 123, Name: Asteroid Field ... }
-                            if "Name:" in line:
-                                parts = line.split("Name:")
-                                if len(parts) > 1:
-                                    ename = parts[1].split(",")[0].split("}")[0].strip(' "\'')
-                                    if ename:
-                                        self.valid_eclasses.add(ename.lower())
-                            # YAML format: - Name: Asteroid Field
-                            elif line.startswith("- Name:") or line.startswith("Name:"):
-                                ename = line.split("Name:")[1].strip(' "\'')
-                                if ename:
-                                    self.valid_eclasses.add(ename.lower())
-                except Exception:
-                    pass
+    def _config_candidates(self, filename: str) -> list[Path]:
+        found: list[Path] = []
+        for base in (self.scenario_prefabs, self.game_prefabs):
+            if not base:
+                continue
+            parent = base.parent
+            found.append(parent / "Configuration" / filename)
+            found.append(parent / filename)
+            if parent.parent:
+                found.append(parent.parent / "Content" / "Configuration" / filename)
+        return found
 
-    def load_compound_pois(self):
-        self.valid_compound_pois.clear()
-        candidates = []
-        for base in [self.scenario_prefabs, self.game_prefabs]:
-            if base and base.parent:
-                cfg = base.parent / "Configuration"
-                candidates.extend([
-                    cfg / "CompoundPOIs.yaml",
-                    cfg / "CompoundEntities.yaml",
-                    base.parent / "CompoundPOIs.yaml"
-                ])
-                if base.parent.parent:
-                    candidates.append(base.parent.parent / "Content" / "Configuration" / "CompoundPOIs.yaml")
+    def _load_eclasses(self) -> None:
+        for default in (
+            "Asteroid", "AsteroidField", "AsteroidResource", "SpaceFog",
+            "GasCloud", "SpaceDebris", "SpaceMine",
+        ):
+            self._remember(self.eclass_canonical, default, overwrite=False)
 
-        for c in set(candidates):
-            if c.exists():
-                try:
-                    with open(c, "r", encoding="utf-8") as f:
-                        data = yaml.load(f)
-                    if isinstance(data, dict):
-                        for k in data.keys():
-                            self.valid_compound_pois.add(str(k).lower())
-                    elif isinstance(data, list):
-                        for item in data:
-                            if isinstance(item, dict):
-                                name = item.get("Name") or item.get("CompoundPOI") or item.get("GroupName")
-                                if name:
-                                    self.valid_compound_pois.add(str(name).lower())
-                except Exception:
-                    pass
-
-    def load_def_prefabs_yaml(self):
-        candidates = []
-        if self.scenario_prefabs and self.scenario_prefabs.exists():
-            candidates.extend(list(self.scenario_prefabs.rglob("DefPrefabs.yaml")))
-            if self.scenario_prefabs.parent:
-                candidates.extend(list(self.scenario_prefabs.parent.rglob("DefPrefabs.yaml")))
-
-        if self.game_prefabs and self.game_prefabs.exists():
-            candidates.extend(list(self.game_prefabs.rglob("DefPrefabs.yaml")))
-            if self.game_prefabs.parent:
-                candidates.extend(list(self.game_prefabs.parent.rglob("Configuration/DefPrefabs.yaml")))
-
-        for path in set(candidates):
+        seen_files = set()
+        for path in self._config_candidates("EClassConfig.ecf") + self._config_candidates("EClassConfig.yaml"):
+            if not path.exists() or path in seen_files:
+                continue
+            seen_files.add(path)
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = yaml.load(f)
-                if isinstance(data, dict):
-                    for group_name, info in data.items():
-                        g_lower = str(group_name).lower()
-                        if isinstance(info, list):
-                            for item in info:
-                                p_name = item.get("Prefab") if isinstance(item, dict) else str(item)
-                                if p_name:
-                                    self.group_to_prefabs.setdefault(g_lower, []).append(p_name)
-                        elif isinstance(info, dict) and "Prefab" in info:
-                            self.group_to_prefabs.setdefault(g_lower, []).append(info["Prefab"])
-            except Exception:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for raw in text.splitlines():
+                line = raw.split("#", 1)[0].strip()
+                if not line or "Name:" not in line:
+                    continue
+                name = line.split("Name:", 1)[1].split(",")[0].split("}")[0].strip(" \"'")
+                if name and " " not in name:
+                    self._remember(self.eclass_canonical, name, overwrite=False)
+
+    def _consume_compound_obj(self, data) -> None:
+        if isinstance(data, dict):
+            # Map of name → body, or a document with a list under a key.
+            list_keys = [k for k in data if isinstance(data[k], list)]
+            if list_keys and not any(isinstance(v, (dict, str)) for v in data.values() if not isinstance(v, list)):
                 pass
+            for key, value in data.items():
+                if isinstance(value, (dict, list)) and key.lower() in {"compounds", "compoundpois", "poi"}:
+                    self._consume_compound_obj(value)
+                elif isinstance(value, dict):
+                    self._remember(self.compound_canonical, str(key), overwrite=False)
+                    inner = value.get("Name") or value.get("CompoundPOI")
+                    if isinstance(inner, str):
+                        self._remember(self.compound_canonical, inner, overwrite=False)
+                elif isinstance(value, list):
+                    self._consume_compound_obj(value)
+                elif isinstance(value, str) and key.lower() in {"name", "compoundpoi", "groupname"}:
+                    self._remember(self.compound_canonical, value, overwrite=False)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, str):
+                    self._remember(self.compound_canonical, item, overwrite=False)
+                elif isinstance(item, dict):
+                    name = item.get("Name") or item.get("CompoundPOI") or item.get("GroupName")
+                    if isinstance(name, str):
+                        self._remember(self.compound_canonical, name, overwrite=False)
+                    elif isinstance(name, list):
+                        for part in name:
+                            self._remember(self.compound_canonical, str(part), overwrite=False)
 
-    def get_available_prefabs(self) -> List[Dict]:
-        self.all_prefabs = []
-        self.file_names_lower.clear()
-        self.group_to_prefabs.clear()
-        self.type_to_prefabs = {"BA": [], "CV": [], "SV": [], "HV": [], "OTHER": []}
+    def _load_compounds(self) -> None:
+        names = ("CompoundPOIs.yaml", "CompoundPOI.yaml", "CompoundEntities.yaml", "Compounds.yaml")
+        seen = set()
+        for filename in names:
+            for path in self._config_candidates(filename):
+                if not path.exists() or path in seen:
+                    continue
+                seen.add(path)
+                try:
+                    data = yaml.load(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                self._consume_compound_obj(data)
+        if not self.compound_canonical:
+            self.notes.append("No CompoundPOIs.yaml found. Compound.Name values were not verified.")
 
-        # Load all reference catalogs
-        self.load_eclass_config()
-        self.load_compound_pois()
-        self.load_def_prefabs_yaml()
-
-        search_dirs = []
-        if self.scenario_prefabs and self.scenario_prefabs.exists():
-            search_dirs.append((self.scenario_prefabs, "Scenario"))
+    def _load_prefabs(self) -> None:
+        # Game first, scenario overwrites canonical spelling.
+        roots = []
         if self.game_prefabs and self.game_prefabs.exists():
-            search_dirs.append((self.game_prefabs, "Base Game"))
+            roots.append((self.game_prefabs, "Base Game", False))
+        if self.scenario_prefabs and self.scenario_prefabs.exists():
+            roots.append((self.scenario_prefabs, "Scenario", True))
 
-        for root_dir, source in search_dirs:
-            for epb in root_dir.rglob("*.epb"):
+        for root, source, overwrite in roots:
+            for epb in root.rglob("*.epb"):
+                if any(part.startswith(".") for part in epb.parts):
+                    continue
                 stem = epb.stem
-                stem_lower = stem.lower()
-                if stem_lower not in self.file_names_lower:
-                    self.file_names_lower.add(stem_lower)
-                    ptype = self.detect_type(stem)
-                    self.type_to_prefabs[ptype].append(stem)
-                    self.all_prefabs.append({"name": stem, "source": source, "type": ptype})
+                key = stem.lower()
+                self._remember(self.prefab_canonical, stem, overwrite=overwrite)
+                self.prefab_source[key] = source
+                # A group is often the filename itself when the blueprint has one member.
+                self._remember(self.group_canonical, stem, overwrite=overwrite)
+                try:
+                    blob = epb.read_bytes()
+                except OSError:
+                    continue
+                for name in harvest_header_names(blob):
+                    self._remember(self.group_canonical, name, overwrite=overwrite)
 
-        self.all_prefabs.sort(key=lambda x: x["name"])
-        return self.all_prefabs
+    def known_group(self, name: str) -> str | None:
+        if not name:
+            return None
+        return self.group_canonical.get(name.lower())
 
-    def get_contextual_replacements(self, group_name: str, current_value: str) -> List[str]:
-        is_compound = any(x in (group_name or current_value).lower() for x in ["compound", "wreck", "debris", "gascloud", "asteroid"])
-        if is_compound and self.valid_compound_pois:
-            return sorted(list(self.valid_compound_pois))
+    def known_prefab(self, name: str) -> str | None:
+        if not name:
+            return None
+        clean = name[:-4] if name.lower().endswith(".epb") else name
+        return self.prefab_canonical.get(clean.lower())
 
-        if group_name and group_name.lower() in self.group_to_prefabs:
-            matches = list(set(self.group_to_prefabs[group_name.lower()]))
-            if matches:
-                return sorted(matches)
+    def known_compound(self, name: str) -> str | None:
+        return self.compound_canonical.get((name or "").lower())
 
-        detected_type = self.detect_type(current_value or group_name)
-        if detected_type != "OTHER" and self.type_to_prefabs[detected_type]:
-            return sorted(self.type_to_prefabs[detected_type])
+    def known_eclass(self, name: str) -> str | None:
+        return self.eclass_canonical.get((name or "").lower())
 
-        return [p["name"] for p in self.all_prefabs]
+    def suggest(self, current: str, kind: str, limit: int = 20) -> list[str]:
+        self.build()
+        current_l = (current or "").lower()
+        if kind == "compound":
+            pool = list(self.compound_canonical.values())
+        elif kind == "prefab":
+            pool = list(self.prefab_canonical.values())
+        elif kind == "eclass":
+            pool = [n for n in self.eclass_canonical.values() if "fog" in n.lower() or "space" in n.lower()]
+            if not pool:
+                pool = list(self.eclass_canonical.values())
+        else:
+            pool = list(self.group_canonical.values())
+
+        def rank(name: str):
+            low = name.lower()
+            return (_lev(low, current_l), 0 if low.startswith(current_l[:3]) else 1, low)
+
+        ordered = sorted(set(pool), key=rank)
+        if current_l:
+            close = [n for n in ordered if _lev(n.lower(), current_l) <= 3]
+            rest = [n for n in ordered if n not in close]
+            ordered = close + rest
+        return ordered[:limit]

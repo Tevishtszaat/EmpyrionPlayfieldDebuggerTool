@@ -1,0 +1,5 @@
+# Inherited from the base game when the scenario folder does not define the biome.
+PlayfieldType: Planet
+BiomeClusterData:
+  - Name: Volcanic
+    Id: 9

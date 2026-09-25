@@ -1,0 +1,76 @@
+# Demo static layer. Intentionally imperfect so the scanner has something to show.
+# Survival ignores POIs.Fixed unless this is true.
+UseFixed: False
+PlayfieldType: Planet
+POIs:
+  Random:
+    - GroupName: ChildTooSoon
+      CountMinMax: [1, 1]
+      DroneProb: 0
+      DronesMinMax: [0, 0]
+      ReserveCount: 0
+      TroopTransport: False
+      SpawnPOINear: [LateParent]
+      SpawnPOINearRange: [80, 200]
+      Biome: [Desert]
+    - GroupName: JunkT1
+      CountMinMax: [1, 2]
+      DroneProb: 0.5
+      DronesMinMax: [1, 2]
+      ReserveCount: 1
+      TroopTransport: True
+      SpawnPOINear: [START]
+      SpawnPOINearRange: [100, 250]
+      Biome: [Desert, Volcanic]
+      Faction: Zirax
+      SpawnResource: ["IronResource:0-2", "NopeResource:1"]
+      Properties:
+        - Key: RegenAfter
+          Value: 720
+        - Key: MapMarker
+          Value: Hostile
+    - GroupName: junkt1
+      CountMinMax: [1, 1]
+      DroneProb: 0
+      DronesMinMax: [0, 1]
+      ReserveCount: 0
+      TroopTransport: False
+      Biome: [desert]
+    - GroupName: JunkT1Typo
+      CountMinMax: [1, 1]
+      DroneProb: 0
+      DronesMinMax: [0, 1]
+      ReserveCount: 0
+      TroopTransport: False
+      Biome: [NotARealBiome]
+      SpawnPOIAvoid: [MissingGroup]
+      DroneBaseSetup: NoSuchSetup
+      WeirdKey: oops
+      Compound:
+        CountMinMax: [1, 2]
+        Probability: 1
+        Name: [CompoundNope]
+        DistanceMinMax: [40, 80]
+        Rotate: true
+    - GroupName: LateParent
+      CountMinMax: [1, 1]
+      DroneProb: 0
+      DronesMinMax: [0, 0]
+      ReserveCount: 0
+      TroopTransport: False
+      Biome: [Forest]
+  Fixed:
+    - Type: BA_Player
+      Prefab: BA_DoesNotExist
+      Mode: Survival
+      Name: Broken Admin
+      Pos: [12, 40, -8]
+      Rot: [0, 15, 0]
+      InitPower: True
+DroneBaseSetup:
+  Random:
+    - GroupName: RealDroneBase
+      DronesMinMax: [2, 3]
+      ReserveCount: 3
+      DroneProb: 1
+      Difficulty: 3

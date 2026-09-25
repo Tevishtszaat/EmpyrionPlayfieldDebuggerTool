@@ -1,539 +1,280 @@
-﻿import os
+"""Load and edit playfield YAML.
+
+Opening a file is read-only. Nothing here rewrites the playfield until an
+edit method is called, and every edit is appended to the session log.
+"""
+
+from __future__ import annotations
+
+import os
 import re
-import random
 import shutil
 from datetime import datetime
 from pathlib import Path
+
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError
+
+from backend.schema import RANDOM_POI_KEYS
 
 yaml = YAML()
 yaml.preserve_quotes = True
 yaml.indent(mapping=2, sequence=4, offset=2)
-yaml.width = 100000
+yaml.width = 4096
 
-# Strict allow-list of properties that the C# class 'PoiData+RandomPoiData' actually possesses
-RANDOM_POI_VALID_KEYS = {
-    "groupname", "countminmax", "droneprob", "dronesmax", "reservecount",
-    "spawnpoiavoid", "spawnresource", "properties", "resourcedistance",
-    "biome", "faction", "level", "delayminmax", "delaybetweenspawns", "compoundpoi"
-}
-
-RESERVED_YAML_KEYS = {
-    "key", "value", "groupname", "prefab", "name", "names", "model", "type", "faction",
-    "pos", "rot", "initresource", "biom", "biome", "delayminmax", "delaybetweenspawns",
-    "parent", "properties", "random", "fixed", "objects", "dronespawns", "structures",
-    "creatures", "subelements", "compoundpoi", "description", "planettype", "gravity", "mode", "status"
-}
-
-def is_true_yaml_key(line: str) -> bool:
-    stripped = line.strip()
-    if stripped.startswith("-"):
-        return True
-    if ":" in stripped:
-        possible_key = stripped.split(":", 1)[0].strip().lower()
-        if possible_key in RESERVED_YAML_KEYS:
-            return True
-    return False
-
-def clean_empty_null_yaml_keys(file_path: Path) -> bool:
-    if not file_path.exists():
-        return False
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        modified = False
-        new_lines = []
-        
-        for line in lines:
-            stripped = line.strip()
-            if stripped == "-":
-                new_lines.append(f"# [EPD Auto-Removed Empty Item]: {line}")
-                modified = True
-                continue
-
-            match = re.match(r'^([ \t]*)([A-Za-z0-9_-]+):[ \t]*$', line)
-            if match:
-                key_name = match.group(2).lower()
-                if key_name in {"prefab", "faction", "groupname", "name", "model", "type"}:
-                    new_lines.append(f"# [EPD Auto-Commented Empty Key]: {line}")
-                    modified = True
-                    continue
-
-            new_lines.append(line)
-
-        if modified:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            return True
-    except Exception:
-        pass
-    return False
-
-def expand_tabs_to_column_stops(text: str, tab_size: int = 2) -> (str, bool):
-    if '\t' not in text:
-        return text, False
-
-    new_lines = []
-    has_tabs = False
-
-    for line in text.splitlines(keepends=True):
-        if '\t' not in line:
-            new_lines.append(line)
-            continue
-
-        has_tabs = True
-        out_chars = []
-        col = 0
-
-        for char in line:
-            if char == '\t':
-                spaces_to_add = tab_size - (col % tab_size)
-                out_chars.append(' ' * spaces_to_add)
-                col += spaces_to_add
-            else:
-                out_chars.append(char)
-                if char in ('\r', '\n'):
-                    col = 0
-                else:
-                    col += 1
-
-        new_lines.append("".join(out_chars))
-
-    return "".join(new_lines), has_tabs
-
-def enforce_strict_single_lines_on_disk(file_path: Path) -> bool:
-    if not file_path.exists():
-        return False
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        modified = False
-        new_lines = []
-        i = 0
-        n = len(lines)
-
-        while i < n:
-            line = lines[i]
-
-            desc_match = re.match(r'^([ \t]*Description:)\s*(.*)$', line)
-            if desc_match:
-                prefix = desc_match.group(1)
-                first_val = desc_match.group(2).rstrip('\r\n')
-                starts_quote = first_val.startswith('"') or first_val.startswith("'")
-                qchar = first_val[0] if starts_quote else None
-
-                if starts_quote and len(first_val) > 1 and first_val.endswith(qchar):
-                    escaped = False
-                    for c in reversed(first_val[:-1]):
-                        if c == '\\':
-                            escaped = not escaped
-                        else:
-                            break
-                    if not escaped:
-                        new_lines.append(line)
-                        i += 1
-                        continue
-
-                parts = [first_val.lstrip('"\'').rstrip('"\'')] if first_val else []
-                j = i + 1
-                while j < n:
-                    next_line = lines[j]
-                    if is_true_yaml_key(next_line):
-                        break
-                    stripped = next_line.strip()
-                    if starts_quote and qchar in stripped:
-                        idx_q = -1
-                        for idx_c, char in enumerate(stripped):
-                            if char == qchar:
-                                num_slashes = 0
-                                k = idx_c - 1
-                                while k >= 0 and stripped[k] == '\\':
-                                    num_slashes += 1
-                                    k -= 1
-                                if num_slashes % 2 == 0:
-                                    idx_q = idx_c
-                                    break
-                        if idx_q != -1:
-                            p = stripped[:idx_q].strip()
-                            if p:
-                                parts.append(p)
-                            j += 1
-                            break
-                        else:
-                            parts.append(stripped)
-                    else:
-                        if stripped:
-                            parts.append(stripped)
-                    j += 1
-
-                merged = " ".join([p for p in parts if p])
-                merged = re.sub(r'[ \t]+', ' ', merged).strip().replace('"', '\\"')
-                new_lines.append(f'{prefix} "{merged}"\n')
-                modified = True
-                i = j
-                continue
-
-            flow_match = re.match(r'^([ \t]*[A-Za-z0-9_-]+:[ \t]*\[)(.*)$', line)
-            if flow_match and "]" not in flow_match.group(2):
-                prefix = flow_match.group(1)
-                first_val = flow_match.group(2).rstrip('\r\n')
-                parts = [first_val.strip()] if first_val.strip() else []
-
-                j = i + 1
-                while j < n:
-                    next_line = lines[j]
-                    stripped = next_line.strip()
-                    if "]" in stripped:
-                        before_bracket = stripped.split("]")[0].strip()
-                        if before_bracket:
-                            parts.append(before_bracket)
-                        j += 1
-                        break
-                    else:
-                        if stripped:
-                            parts.append(stripped)
-                    j += 1
-
-                combined_items = " ".join(parts)
-                tokens = [t.strip().strip(',').strip() for t in combined_items.split(',') if t.strip()]
-                clean_flow_str = ", ".join(tokens)
-                new_lines.append(f'{prefix}{clean_flow_str}]\n')
-                modified = True
-                i = j
-                continue
-
-            value_match = re.match(r'^([ \t]*Value:)\s*(.*)$', line)
-            if value_match:
-                prefix = value_match.group(1)
-                first_val = value_match.group(2).rstrip('\r\n').strip(' "\'')
-
-                j = i + 1
-                is_wrapped = False
-                parts = [first_val] if first_val else []
-
-                while j < n:
-                    next_line = lines[j]
-                    if is_true_yaml_key(next_line):
-                        break
-
-                    if next_line.startswith(" ") or next_line.startswith("\t"):
-                        stripped = next_line.strip().strip(' "\'')
-                        if stripped:
-                            parts.append(stripped)
-                            is_wrapped = True
-                        j += 1
-                    else:
-                        break
-
-                if is_wrapped:
-                    combined_val = " ".join(parts)
-                    combined_val = re.sub(r'[ \t]*,[ \t]*', ', ', combined_val)
-                    combined_val = re.sub(r'[ \t]+', ' ', combined_val).strip()
-                    new_lines.append(f'{prefix} "{combined_val}"\n')
-                    modified = True
-                    i = j
-                    continue
-                else:
-                    new_lines.append(line)
-                    i += 1
-                    continue
-
-            new_lines.append(line)
-            i += 1
-
-        if modified:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            return True
-    except Exception:
-        pass
-    return False
 
 class PlayfieldAST:
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, log=None):
         self.path = Path(file_path)
+        self.log = log
         self.data = None
         self.parse_error = None
         self.duplicate_key_info = None
-
-        clean_empty_null_yaml_keys(self.path)
-        self.detab_content()
-        self.sanitize_lines()
         self.load()
-        # Strictly sanitize RandomPoiData against the C# class allow-list
-        self.sanitize_random_poi_keys()
-
-    def sanitize_random_poi_keys(self) -> bool:
-        """
-        Enforces C# Engine Schema for RandomPoiData.
-        Prunes ALL foreign properties (Status, Mode, CanBeZero, InitResource, Pos, Rot, Prefab)
-        that cause YamlDotNet deserialization exceptions.
-        """
-        if not self.data or not isinstance(self.data, dict):
-            return False
-
-        pois = self.data.get("POIs", {})
-        if not isinstance(pois, dict):
-            return False
-
-        random_list = pois.get("Random", [])
-        if not isinstance(random_list, list):
-            return False
-
-        modified = False
-        for item in random_list:
-            if isinstance(item, dict):
-                # If Prefab exists and no GroupName, copy it over
-                if "Prefab" in item:
-                    if "GroupName" not in item or not item["GroupName"]:
-                        item["GroupName"] = item["Prefab"]
-                    del item["Prefab"]
-                    modified = True
-
-                # Inspect all keys in this Random POI block
-                current_keys = list(item.keys())
-                for k in current_keys:
-                    k_lower = str(k).lower().strip()
-                    # If this key is NOT in the official C# RandomPoiData allow-list, prune it!
-                    if k_lower not in RANDOM_POI_VALID_KEYS:
-                        del item[k]
-                        modified = True
-
-        if modified:
-            self.save_atomic()
-            return True
-        return False
-
-    def detab_content(self) -> bool:
-        if not self.path.exists():
-            return False
-
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                raw_text = f.read()
-
-            clean_text, has_tabs = expand_tabs_to_column_stops(raw_text, tab_size=2)
-            if has_tabs:
-                self.backup()
-                with open(self.path, "w", encoding="utf-8") as f:
-                    f.write(clean_text)
-                    f.flush()
-                    os.fsync(f.fileno())
-                return True
-        except Exception:
-            pass
-        return False
-
-    def sanitize_lines(self) -> bool:
-        return enforce_strict_single_lines_on_disk(self.path)
 
     def load(self):
         self.parse_error = None
         self.duplicate_key_info = None
+        self.data = None
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                self.data = yaml.load(f)
-        except DuplicateKeyError as e:
-            self.parse_error = str(e)
-            key_match = re.search(r'duplicate key "([^"]+)"', str(e))
-            line_match = re.search(r'line (\d+)', str(e))
-            key_name = key_match.group(1) if key_match else ""
-            line_num = int(line_match.group(1)) if line_match else -1
+            with open(self.path, "r", encoding="utf-8-sig") as handle:
+                self.data = yaml.load(handle)
+        except DuplicateKeyError as exc:
+            self.parse_error = str(exc)
+            key_match = re.search(r'duplicate key "([^"]+)"', str(exc))
+            line_match = re.search(r"line (\d+)", str(exc))
             self.duplicate_key_info = {
-                "key": key_name,
-                "line": line_num,
-                "error": str(e)
+                "key": key_match.group(1) if key_match else "",
+                "line": int(line_match.group(1)) if line_match else -1,
+                "error": str(exc),
             }
-        except Exception as e:
-            self.parse_error = str(e)
+        except Exception as exc:
+            self.parse_error = str(exc)
 
-    def backup(self):
+    def backup(self) -> str:
         backup_dir = self.path.parent / ".epd_backups"
         backup_dir.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = backup_dir / f"{self.path.name}_{timestamp}.bak"
-        shutil.copy2(self.path, backup_path)
-        return str(backup_path)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        dest = backup_dir / f"{self.path.name}_{stamp}.bak"
+        shutil.copy2(self.path, dest)
+        return str(dest)
 
     def save_atomic(self):
-        self.backup()
-        with open(self.path, "w", encoding="utf-8") as f:
-            yaml.dump(self.data, f)
-            f.flush()
-            os.fsync(f.fileno())
-        enforce_strict_single_lines_on_disk(self.path)
+        backup = self.backup()
+        with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
+            yaml.dump(self.data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return backup
+
+    def _log(self, action: str, *, target: str = "", reason: str = "", before: str = "", after: str = ""):
+        if self.log:
+            self.log.record(
+                action,
+                file=str(self.path),
+                target=target,
+                reason=reason,
+                before=before,
+                after=after,
+            )
 
     def remove_duplicate_key_line(self, line_number: int, key_name: str) -> bool:
+        """Comment out the duplicate key. Prefers the reported line, then the
+        next occurrence — never the earlier (original) key."""
         if not self.path.exists() or line_number <= 0:
             return False
+        original = self.path.read_text(encoding="utf-8-sig")
+        lines = original.splitlines(keepends=True)
+        key_re = re.compile(rf"^\s*{re.escape(key_name)}\s*:", re.IGNORECASE) if key_name else None
 
+        def is_key(line: str) -> bool:
+            return bool(key_re and key_re.search(line))
+
+        target = line_number - 1
+        chosen = None
+        if 0 <= target < len(lines) and (not key_name or is_key(lines[target]) or key_name in lines[target]):
+            chosen = target
+        if chosen is None and key_name:
+            for idx in range(max(0, target), min(len(lines), target + 6)):
+                if is_key(lines[idx]):
+                    chosen = idx
+                    break
+        if chosen is None:
+            return False
+
+        raw = lines[chosen].rstrip("\r\n")
+        lines[chosen] = f"# [EPD removed duplicate]: {raw}\n"
         self.backup()
-        with open(self.path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        target_idx = line_number - 1
-        removed = False
-
-        search_range = range(max(0, target_idx - 2), min(len(lines), target_idx + 3))
-        for idx in search_range:
-            if key_name and key_name in lines[idx]:
-                lines[idx] = f"# [EPD Auto-Removed Duplicate]: {lines[idx]}"
-                removed = True
-                break
-
-        if not removed and 0 <= target_idx < len(lines):
-            lines[target_idx] = f"# [EPD Auto-Removed Duplicate]: {lines[target_idx]}"
-            removed = True
-
-        if removed:
-            with open(self.path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-                f.flush()
-                os.fsync(f.fileno())
-            self.load()
-            return True
-
-        return False
+        self.path.write_text("".join(lines), encoding="utf-8", newline="")
+        self._log(
+            "comment-duplicate-key",
+            target=f"line {chosen + 1}",
+            reason=f"Duplicate YAML key '{key_name}' — YamlDotNet will not load the playfield.",
+            before=raw,
+            after=lines[chosen].rstrip("\r\n"),
+        )
+        self.load()
+        return True
 
     def auto_resolve_all_duplicate_keys(self) -> int:
         resolved = 0
-        max_passes = 25
-        while self.duplicate_key_info and max_passes > 0:
-            dup = self.duplicate_key_info
-            if self.remove_duplicate_key_line(dup["line"], dup["key"]):
-                resolved += 1
-            else:
+        for _ in range(25):
+            if not self.duplicate_key_info:
                 break
-            max_passes -= 1
+            info = self.duplicate_key_info
+            if not self.remove_duplicate_key_line(info["line"], info["key"]):
+                break
+            resolved += 1
         return resolved
 
     def get_container(self, source: str):
-        if not self.data or not isinstance(self.data, dict):
+        if not isinstance(self.data, dict):
             return None
-        if source == "Objects":
-            return self.data.get("Objects", [])
-        elif source == "Fixed":
-            pois = self.data.get("POIs", {})
-            return pois.get("Fixed", []) if isinstance(pois, dict) else []
-        elif source == "Random":
-            pois = self.data.get("POIs", {})
-            return pois.get("Random", []) if isinstance(pois, dict) else []
-        elif source == "DroneSpawns":
-            return self.data.get("DroneSpawns", [])
+        if source == "Fixed":
+            pois = self.data.get("POIs")
+            return pois.get("Fixed") if isinstance(pois, dict) else None
+        if source == "Random":
+            pois = self.data.get("POIs")
+            return pois.get("Random") if isinstance(pois, dict) else None
+        if source == "DroneBaseSetup":
+            block = self.data.get("DroneBaseSetup")
+            return block.get("Random") if isinstance(block, dict) else None
         return None
 
-    def correct_biome(self, source: str, index: int, new_biome: str, bad_biomes=None, save_immediately=True):
+    def _poi(self, source: str, index: int):
         container = self.get_container(source)
-        if container is not None and 0 <= index < len(container):
-            item = container[index]
-            if isinstance(item, dict):
-                current = item.get("Biome", [])
-                if isinstance(current, list):
-                    bad_set = {b.lower() for b in (bad_biomes or [])}
-                    updated = []
-                    replaced = False
-                    for b in current:
-                        if str(b).lower() in bad_set:
-                            if not replaced:
-                                updated.append(new_biome)
-                                replaced = True
-                        else:
-                            updated.append(b)
-                    if not updated:
-                        updated = [new_biome]
-                    item["Biome"] = updated
+        if not isinstance(container, list) or not (0 <= index < len(container)):
+            return None
+        item = container[index]
+        return item if isinstance(item, dict) else None
+
+    def correct_biome(self, source: str, index: int, new_biome: str, bad_biomes=None) -> bool:
+        item = self._poi(source, index)
+        if item is None:
+            return False
+        bad = {str(b).lower() for b in (bad_biomes or [])}
+        current = item.get("Biome", [])
+        before = repr(current)
+        if isinstance(current, list):
+            updated = []
+            replaced = False
+            for entry in current:
+                if str(entry).lower() in bad:
+                    if not replaced:
+                        updated.append(new_biome)
+                        replaced = True
                 else:
-                    item["Biome"] = [new_biome]
-
-                if save_immediately:
-                    self.save_atomic()
-                return True
-        return False
-
-    def replace_target(self, source: str, index: int, new_value: str, is_compound: bool = False, save_immediately=True):
-        container = self.get_container(source)
-        if container is not None and 0 <= index < len(container):
-            item = container[index]
-            if isinstance(item, dict):
-                if is_compound or "CompoundPOI" in item:
-                    item["CompoundPOI"] = new_value
-                    if "GroupName" in item:
-                        item["GroupName"] = new_value
-                else:
-                    if source == "Random":
-                        item["GroupName"] = new_value
-                        # Auto-clean any illegal non-Random properties on this item
-                        for illegal_key in list(item.keys()):
-                            if illegal_key.lower().strip() not in RANDOM_POI_VALID_KEYS:
-                                del item[illegal_key]
-                    else:
-                        item["Prefab"] = new_value
-                        if "GroupName" in item:
-                            item["GroupName"] = new_value
-
-                if save_immediately:
-                    self.save_atomic()
-                return True
-        return False
-
-    def remove_target(self, source: str, index: int, save_immediately=True):
-        container = self.get_container(source)
-        if container is not None and 0 <= index < len(container):
-            del container[index]
-            if save_immediately:
-                self.save_atomic()
-            return True
-        return False
-
-    def autocomplete_all_issues(self, issues, indexer):
-        self.auto_resolve_all_duplicate_keys()
-        clean_empty_null_yaml_keys(self.path)
-        self.detab_content()
-        self.sanitize_lines()
-
-        if not issues:
-            self.sanitize_random_poi_keys()
-            return {"repaired": 0, "pruned": 0}
-
-        repaired = 0
-        pruned = 0
-
-        grouped = {}
-        for issue in issues:
-            src = issue.get("source", "Random")
-            grouped.setdefault(src, []).append(issue)
-
-        for src, src_issues in grouped.items():
-            sorted_src_issues = sorted(src_issues, key=lambda x: x.get("index", -1), reverse=True)
-            for issue in sorted_src_issues:
-                idx = issue.get("index", -1)
-                suggestions = issue.get("suggestions", [])
-                itype = issue.get("type")
-
-                if itype == "invalid_biome":
-                    if suggestions:
-                        if self.correct_biome(src, idx, suggestions[0], issue.get("bad_biomes", []), save_immediately=False):
-                            repaired += 1
-                    continue
-
-                is_compound = (itype == "missing_compound_poi")
-                if suggestions:
-                    chosen = random.choice(suggestions)
-                    if self.replace_target(src, idx, chosen, is_compound, save_immediately=False):
-                        repaired += 1
-                else:
-                    if self.remove_target(src, idx, save_immediately=False):
-                        pruned += 1
-
-        self.sanitize_random_poi_keys()
+                    updated.append(entry)
+            if not updated:
+                updated = [new_biome]
+            item["Biome"] = updated
+        else:
+            item["Biome"] = [new_biome]
         self.save_atomic()
-        return {"repaired": repaired, "pruned": pruned}
+        self._log(
+            "correct-biome",
+            target=f"{source}[{index}].Biome",
+            reason="Biome filter did not match a BiomeClusterData name on this playfield.",
+            before=before,
+            after=repr(item.get("Biome")),
+        )
+        self.load()
+        return True
+
+    def replace_target(self, source: str, index: int, new_value: str, is_compound: bool = False) -> bool:
+        item = self._poi(source, index)
+        if item is None:
+            return False
+        if is_compound and isinstance(item.get("Compound"), dict):
+            before = repr(item["Compound"].get("Name"))
+            item["Compound"]["Name"] = new_value
+            field = "Compound.Name"
+            after = repr(item["Compound"].get("Name"))
+        elif is_compound or "CompoundPOI" in item:
+            before = str(item.get("CompoundPOI", ""))
+            item["CompoundPOI"] = new_value
+            field = "CompoundPOI"
+            after = new_value
+        elif source == "Random":
+            before = str(item.get("GroupName", ""))
+            item["GroupName"] = new_value
+            field = "GroupName"
+            after = new_value
+        else:
+            before = str(item.get("Prefab", ""))
+            item["Prefab"] = new_value
+            field = "Prefab"
+            after = new_value
+        self.save_atomic()
+        self._log(
+            "replace-field",
+            target=f"{source}[{index}].{field}",
+            reason="Replaced from the issue card.",
+            before=before,
+            after=after,
+        )
+        self.load()
+        return True
+
+    def remove_target(self, source: str, index: int) -> bool:
+        container = self.get_container(source)
+        if not isinstance(container, list) or not (0 <= index < len(container)):
+            return False
+        removed = container[index]
+        before = repr(removed)[:500]
+        del container[index]
+        self.save_atomic()
+        self._log(
+            "remove-entry",
+            target=f"{source}[{index}]",
+            reason="Removed from the issue card.",
+            before=before,
+            after="(deleted)",
+        )
+        self.load()
+        return True
+
+    def strip_key(self, source: str, index: int, key_name: str) -> bool:
+        item = self._poi(source, index)
+        if item is None or not key_name:
+            return False
+        real = next((k for k in list(item.keys()) if str(k).lower() == key_name.lower()), None)
+        if real is None:
+            return False
+        before = f"{real}: {item.get(real)!r}"[:500]
+        del item[real]
+        self.save_atomic()
+        self._log(
+            "strip-unknown-key",
+            target=f"{source}[{index}].{real}",
+            reason="Key is not on the Empyrion POI schema. YamlDotNet can refuse to load the playfield.",
+            before=before,
+            after="(removed)",
+        )
+        self.load()
+        return True
+
+    def set_use_fixed(self) -> bool:
+        if not isinstance(self.data, dict):
+            return False
+        before = repr(self.data.get("UseFixed", None))
+        if hasattr(self.data, "insert") and "UseFixed" not in self.data:
+            self.data.insert(0, "UseFixed", True)
+        else:
+            self.data["UseFixed"] = True
+        self.save_atomic()
+        self._log(
+            "set-use-fixed",
+            target="UseFixed",
+            reason="Fixed POIs do not spawn in Survival unless UseFixed is true.",
+            before=before,
+            after="True",
+        )
+        self.load()
+        return True
+
+
+def unknown_random_keys(item: dict) -> list[str]:
+    if not isinstance(item, dict):
+        return []
+    return [str(k) for k in item.keys() if str(k).lower().strip() not in RANDOM_POI_KEYS]

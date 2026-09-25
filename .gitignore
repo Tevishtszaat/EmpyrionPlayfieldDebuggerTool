@@ -1,8 +1,8 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
-.venv/
-venv/
+logs/
+.epd_backups/
+demo/**/*.epb
 dist/
 build/
 *.spec
-.epd_backups/
